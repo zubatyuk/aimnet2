@@ -1,0 +1,93 @@
+data:
+  class: aimnet.data.SizeGroupedDataset
+  loader:
+    x: [coord, numbers, charge]
+    y: [charges, energy, forces, c6i, alpha]
+    batch_size: 300
+
+optimizer:
+  class: torch_optimizer.RAdam
+  #class: torch_optimizer.Lamb
+  #class: torch_optimizer.Ranger
+  kwargs:
+    lr: 5.0001e-4
+    weight_decay: 1.0e-6
+
+#scheduler:
+#  class: ignite.handlers.param_scheduler.LinearCyclicalScheduler
+#  kwargs:
+#    start_value: 2.0e-4
+#    end_value: 1.0e-3
+#    cycle_size: 10
+#    start_value_mult: 0.92
+#    end_value_mult: 0.92
+
+
+scheduler:
+  class: ignite.contrib.handlers.param_scheduler.CosineAnnealingScheduler
+  kwargs:
+    start_value: 5.00001e-4 
+    end_value: 1.00001e-5
+    cycle_size: 600
+
+#rop_scheduler:
+#  factor: 0.5
+#  patience: 10
+#  threshold: 1.0001e-2 
+#  low_lr: 1.0001e-5
+
+loss:
+  class: psloss.PerSampleMTLoss
+  kwargs:
+    components:
+     - fn: psloss.energy_loss_fn
+       weights: [1.0]
+     - fn: psloss.forces_loss_fn
+       weights: [0.2]
+     - fn: psloss.charges_loss_fn
+       weights: [0.05]
+     - fn: psloss.c6i_loss_fn
+       weights: [0.02]
+     - fn: psloss.alpha_loss_fn
+       weights: [0.01]
+
+metric:
+  class: aimnet.train.metrics.RegMultiMetric
+  kwargs:
+    cfg:
+     energy:
+      abbr: E
+      scale: 23.06  # eV to kcal/mol
+     vv10.energy:
+      abbr: Evv10
+      scale: 23.06  # eV to kcal/mol
+     c6ij_rel:
+      abbr: C6
+      peratom: True
+     alpha:
+      abbr: Alph
+      peratom: True
+     c6i:
+      abbr: C6
+      peratom: True
+     disp_energy:
+      abbr: Ed
+      scale: 23.06  # eV to kcal/mol
+     dipole:
+      abbr: D
+      scale: 1.0
+      mult: 3
+     quadrupole:
+      abbr: Q
+      scale: 1.0
+      mult: 6
+     charges:
+      abbr: q
+      peratom: True
+     forces:
+      abbr: F
+      peratom: True
+      mult: 3
+      scale: 23.06
+
+epochs: 600

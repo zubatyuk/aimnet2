@@ -49,7 +49,7 @@ class Embedding(nn.Embedding):
                     if self.padding_idx is not None and i == self.padding_idx:
                         continue
                     if i in init:
-                        self.weight[i] == init[i]
+                        self.weight[i] = init[i]
                     else:
                         self.weight[i].fill_(float('nan'))
                 for k, v in init.items():
@@ -368,6 +368,33 @@ class LRCoulomb(nn.Module):
         return data
 
 
+class LRCoulomb_NB(LRCoulomb):
+    def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        if 'd_ij_coul' not in data:
+            coord_i = data['coord']
+            coord_j = coord_i[data['idx_j_coul']]
+            if 'shifts_coul' in data:
+                shifts = data['shifts_coul'] @ data['cell']
+                coord_j = coord_j + shifts
+            r_ij = coord_j - coord_i.unsqueeze(-2)
+            d_ij2 = r_ij.pow(2).sum(-1)
+            d_ij2 = d_ij2.masked_fill(data['nb_pad_mask_coul'], 1.0)
+            data['d_ij_coul'] = d_ij2.sqrt()
+        d_ij = data['d_ij_coul']
+
+        q_i = data[self.key_in]
+        q_j = q_i[data['idx_j_coul']]
+        q_j = q_j.masked_fill(data['nb_pad_mask_coul'], 0.0)
+        q_ij = q_i.unsqueeze(-1) * q_j
+        fc = 1 - ops.exp_cutoff(d_ij, self.rc)
+        eh = (7.1998226 * fc * q_ij / d_ij).flatten(-2, -1).sum(-1, dtype=torch.double)
+        if self.key_out in data:
+            data[self.key_out] = data[self.key_out] - eh
+        else:
+            data[self.key_out] = eh
+        return data    
+
+
 class NegLRCoulomb_NB(LRCoulomb):
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
        d_ij = data['d_ij']
@@ -424,7 +451,7 @@ class DispParam(nn.Module):
 
 
 class D3BJ(nn.Module):
-    def __init__(self, a1: float, a2: float, s8: float, s6: float = 1.0):
+    def __init__(self, a1: float, a2: float, s8: float, s6: float = 1.0, key_out='disp_energy'):
         super().__init__()
 
         ## https://github.com/dftd4/dftd4/blob/main/src/dftd4/data/r4r2.f90
@@ -460,6 +487,7 @@ class D3BJ(nn.Module):
         self.a2 = a2
         self.s6 = s6
         self.s8 = s8
+        self.key_out = key_out
 
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         d_ij = data['d_ij'] * 1.889716
@@ -490,47 +518,16 @@ class D3BJ(nn.Module):
 
         e_ij = c6ij * (self.s6 / (d_ij.pow(6) + r0ij.pow(6)) + self.s8 * rrij / (d_ij.pow(8) + r0ij.pow(8)))
         e_disp = - (0.5 * 27.211368) *  e_ij.flatten(-2, -1).sum(-1, dtype=torch.double) # in eV
-        data['disp_energy'] = e_disp
+
+        if self.key_out in data:
+            data[self.key_out] = data[self.key_out] + e_disp
+        else:
+            data[self.key_out] = e_disp
 
         return data
 
 
-class D3BJ_NB(nn.Module):
-    def __init__(self, a1: float, a2: float, s8: float):
-        super().__init__()
-
-        ## https://github.com/dftd4/dftd4/blob/main/src/dftd4/data/r4r2.f90
-        sqrt_z_r4_over_r2 = [0.0,
-            8.0589 , 3.4698 ,
-            29.0974 ,14.8517 ,11.8799 , 7.8715 , 5.5588 , 4.7566 , 3.8025 , 3.1036 ,
-            26.1552 ,17.2304 ,17.7210 ,12.7442 , 9.5361 , 8.1652 , 6.7463 , 5.6004 ,
-            29.2012 ,22.3934 ,
-            19.0598 ,16.8590 ,15.4023 ,12.5589 ,13.4788 ,
-            12.2309 ,11.2809 ,10.5569 ,10.1428 , 9.4907 ,
-            13.4606 ,10.8544 , 8.9386 , 8.1350 , 7.1251 , 6.1971 ,
-            30.0162 ,24.4103 ,
-            20.3537 ,17.4780 ,13.5528 ,11.8451 ,11.0355 ,
-            10.1997 , 9.5414 , 9.0061 , 8.6417 , 8.9975 ,
-            14.0834 ,11.8333 ,10.0179 , 9.3844 , 8.4110 , 7.5152 ,
-            32.7622 ,27.5708 ,
-            23.1671 ,21.6003 ,20.9615 ,20.4562 ,20.1010 ,19.7475 ,19.4828 ,
-            15.6013 ,19.2362 ,17.4717 ,17.8321 ,17.4237 ,17.1954 ,17.1631 ,
-            14.5716 ,15.8758 ,13.8989 ,12.4834 ,11.4421 ,
-            10.2671 , 8.3549 , 7.8496 , 7.3278 , 7.4820 ,
-            13.5124 ,11.6554 ,10.0959 , 9.7340 , 8.8584 , 8.0125 ,
-            29.8135 ,26.3157 ,
-            19.1885 ,15.8542 ,16.1305 ,15.6161 ,15.1226 ,16.1576 , 0.0000 ,
-            0.0000 , 0.0000 , 0.0000 , 0.0000 , 0.0000 , 0.0000 , 0.0000 ,
-            0.0000 , 0.0000 , 0.0000 , 0.0000 , 0.0000 ,
-            0.0000 , 0.0000 , 0.0000 , 0.0000 , 5.4929 ,
-            6.7286 , 6.5144 ,10.9169 ,10.3600 , 9.4723 , 8.6641  ]
-
-        r4r2 = (0.5 * torch.tensor(sqrt_z_r4_over_r2) * torch.arange(len(sqrt_z_r4_over_r2)).sqrt()).sqrt()
-        self.register_parameter('r4r2', nn.Parameter(r4r2, requires_grad=False))
-
-        self.a1 = a1
-        self.a2 = a2
-        self.s8 = s8
+class D3BJ_NB(D3BJ):
 
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         if 'd_ij_coul' not in data:
@@ -543,13 +540,11 @@ class D3BJ_NB(nn.Module):
             d_ij2 = r_ij.pow(2).sum(-1)
             d_ij2 = d_ij2.masked_fill(data['nb_pad_mask_coul'], 1.0)
             data['d_ij_coul'] = d_ij2.sqrt()
-        mask = data['d_ij_coul'] > 15.0
         d_ij = data['d_ij_coul'] * 1.889716
         numbers = data['numbers']
 
         c6_i = data['c6i'].unsqueeze(-1)
         c6_j = data['c6i'][data['idx_j_coul']]
-        c6_j = c6_j.masked_fill(mask, 0.0)
         alpha_i = data['alpha'].unsqueeze(-1).clamp(min=1e-6)
         alpha_j = data['alpha'][data['idx_j_coul']].clamp(min=1e-6)
 
@@ -559,9 +554,13 @@ class D3BJ_NB(nn.Module):
         rrij = 3 * rrii.unsqueeze(-1) * rrii[data['idx_j_coul']]
         r0ij = self.a1 * rrij.sqrt() + self.a2
         d_ij = d_ij.to(torch.double)
-        e_ij = c6ij * (1.0 / (d_ij.pow(6) + r0ij.pow(6)) + self.s8 * rrij / (d_ij.pow(8) + r0ij.pow(8)))
+        e_ij = c6ij * (self.s6 / (d_ij.pow(6) + r0ij.pow(6)) + self.s8 * rrij / (d_ij.pow(8) + r0ij.pow(8)))
         e_disp = - (0.5 * 27.211368) *  e_ij.flatten(-2, -1).sum(-1, dtype=torch.double) # in eV
-        data['disp_energy'] = e_disp
+
+        if self.key_out in data:
+            data[self.key_out] = data[self.key_out] + e_disp
+        else:
+            data[self.key_out] = e_disp
 
         return data
     

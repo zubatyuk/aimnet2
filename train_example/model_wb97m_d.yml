@@ -1,0 +1,70 @@
+class: aimnet.models.aimnet2.AIMNet2
+kwargs:
+    nfeature: 16
+    d2features: true
+    ncomb_v: 12
+    hidden:
+      - [512, 380]
+      - [512, 380]
+      - [512, 380, 380]
+    aim_size: 256
+    aev:
+      rc_s: 5.0
+      nshifts_s: 16
+    outputs:
+      - class: aimnet.modules.Output
+        kwargs:
+          n_in: 256 
+          n_out: 1
+          key_in: 'aim'
+          key_out: 'energy'
+          mlp:
+            activation_fn: torch.nn.GELU
+            last_linear: true
+            hidden: [128, 128]
+
+      - class: aimnet.modules.AtomicShift
+        kwargs:
+          key_in: 'energy'
+          key_out: 'energy'
+
+      - class: aimnet.modules.AtomicSum
+        kwargs:
+          key_in: 'energy'
+          key_out: 'energy'
+
+      - class: aimnet.modules.SRRep
+        kwargs:
+          key_out: 'energy'
+          reduce_sum: true
+          cutoff_fn: exp_cutoff
+          rc: 2.0
+
+      - class: aimnet.modules.LRCoulomb
+        kwargs:
+          key_in: 'charges'
+          key_out: 'energy'          
+
+      - class: aimnet.modules.Output
+        kwargs:
+          n_in: 256
+          n_out: 2
+          key_in: 'aim'
+          key_out: 'disp_param'
+          mlp:
+            activation_fn: torch.nn.GELU
+            bias: true
+            last_linear: true
+            hidden: [128, 64]
+
+      - class: aimnet.modules.DispParam
+        kwargs:
+          ref: d4
+
+      - class: aimnet.modules.D3BJ
+        kwargs:
+          s8: 0.7761
+          a1: 0.7514
+          a2: 2.7099
+          key_out: 'energy'
+            
