@@ -11,16 +11,23 @@ import h5py
 
 
 class DataGroup:
-    def __init__(self, data: Union[str, Dict[str, np.ndarray]] = dict(), copy: bool = False):
+    def __init__(self, data: Union[str, Dict[str, np.ndarray]] = dict(), keys=None):
         self._data = dict()
         if isinstance(data, str):
             assert os.path.isfile(data)
             data = np.load(data, mmap_mode='r')
+            if keys is None:
+                keys = data.keys()
+            data = dict(item for item in data.items() if item[0] in keys)
         elif isinstance(data, h5py.Group):
-            data = dict((k, v[()]) for k, v in data.items())
+            if keys is None:
+                keys = data.keys()
+            data = dict((k, v[()]) for k, v in data.items() if k in keys)
         _n = None
         for k, v in data.items():
             assert isinstance(k, str)
+            if keys is not None and k not in keys:
+                continue
             if _n is None:
                 _n = len(v)
             assert len(v) == _n
@@ -159,14 +166,14 @@ class DataGroup:
 
 
 class SizeGroupedDataset:
-    def __init__(self, data: Union[str, List[str], Dict[int, str], Dict[int, Dict[str, np.ndarray]], Dict[int, DataGroup], None] = None):
+    def __init__(self, data: Union[str, List[str], Dict[int, str], Dict[int, Dict[str, np.ndarray]], Dict[int, DataGroup], None] = None, keys=None):
         self._data = dict()
         self._meta = dict()
         if isinstance(data, str):
             if os.path.isdir(data):
-                self.load_datadir(data)
+                self.load_datadir(data, keys=keys)
             else:
-                self.load_h5(data)
+                self.load_h5(data, keys=keys)
         elif isinstance(data, (list, tuple)):
             self.load_files(data)
         elif isinstance(data, dict):
@@ -175,30 +182,30 @@ class SizeGroupedDataset:
         self.x = {}
         self.y = {}
 
-    def load_datadir(self, path):
+    def load_datadir(self, path, keys=None):
         if not os.path.isdir(path):
             raise FileNotFoundError(
                 f'{path} does not exist or not a directory.')
         for f in glob(os.path.join(path, '???.npz')):
             k = int(os.path.basename(f)[:3])
-            self[k] = DataGroup(f)
+            self[k] = DataGroup(f, keys=keys)
 
-    def load_files(self, files):
+    def load_files(self, files, keys=None):
         for fil in files:
             if not os.path.isfile(fil):
                 raise FileNotFoundError(f'{fil} does not exist or not a file.')
             k = int(os.path.splitext(os.path.basename(fil))[0])
-            self[k] = DataGroup(fil)
+            self[k] = DataGroup(fil, keys=keys)
 
-    def load_dict(self, data):
+    def load_dict(self, data, keys=None):
         for k, v in data.items():
-            self[k] = DataGroup(v)
+            self[k] = DataGroup(v, keys=keys)
 
-    def load_h5(self, data):
+    def load_h5(self, data, keys=None):
         with h5py.File(data, 'r') as f:
             for k, g in f.items():
                 k = int(k)
-                self[k] = DataGroup(g)
+                self[k] = DataGroup(g, keys=keys)
             self._meta = dict(f.attrs)
 
     def keys(self):
