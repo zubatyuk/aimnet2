@@ -1,6 +1,6 @@
 import torch
 from torch import nn, Tensor
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Union
 from aimnet.aev import AEVSV, AEVSV_NB, ConvSV, ConvSV_NB
 from aimnet.modules import MLP, Embedding
 from aimnet.ops import calc_pad_mask, nqe
@@ -8,7 +8,7 @@ from aimnet.ops import calc_pad_mask, nqe
 
 class AIMNet2(nn.Module):
     def __init__(self, aev: Dict, nfeature: int, d2features: bool, ncomb_v: int, hidden: Tuple[List[int]], 
-                 aim_size: int, outputs: List[nn.Module], nblist=False):
+                 aim_size: int, outputs: Union[List[nn.Module], Dict[str, nn.Module]], nblist=False):
         super().__init__()
 
         if nblist:
@@ -53,7 +53,12 @@ class AIMNet2(nn.Module):
                    nfeature_tot+1, n_out=aim_size, hidden=hidden[-1], **mlp_param))
         self.mlps = nn.ModuleList(mlps)
 
-        self.outputs = nn.ModuleList(outputs)
+        if isinstance(outputs, list):
+            self.outputs = nn.ModuleList(outputs)
+        elif isinstance(outputs, dict):
+            self.outputs = nn.ModuleDict(outputs)
+        else:
+            raise TypeError('`outputs` is not either list or dict')
 
     def prepare_data(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         data['coord'] = data['coord'].to(torch.float)
@@ -130,7 +135,7 @@ class AIMNet2(nn.Module):
             else:
                 data['aim'] = _out
 
-        for m in self.outputs:
+        for m in self.outputs.children():
             data = m(data)
 
         return data

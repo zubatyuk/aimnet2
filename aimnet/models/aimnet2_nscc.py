@@ -1,6 +1,6 @@
 import torch
 from torch import nn, Tensor
-from typing import List, Dict
+from typing import List, Dict, Union
 from aimnet.aev import AEVSV, AEVSV_NB, ConvSV, ConvSV_NB
 from aimnet.modules import MLP, Embedding
 from aimnet.ops import calc_pad_mask, nqe
@@ -8,7 +8,7 @@ from aimnet.ops import calc_pad_mask, nqe
 
 class AIMNet2Q(nn.Module):
     def __init__(self, aev: Dict, nfeature: int, d2features: bool, ncomb_v: int, hidden1: List[int], hidden2: List[int],
-                 outputs: List[nn.Module], nblist=False):
+                 outputs: Union[List[nn.Module], Dict[str, nn.Module]], nblist=False):
         super().__init__()
         if nblist:
             self.add_module('aev', AEVSV_NB(**aev))
@@ -49,7 +49,12 @@ class AIMNet2Q(nn.Module):
         self.add_module('mlp1', mlp1)
         self.add_module('mlp2', mlp2)
 
-        self.add_module('outputs', nn.ModuleList(outputs))
+        if isinstance(outputs, list):
+            self.outputs = nn.ModuleList(outputs)
+        elif isinstance(outputs, dict):
+            self.outputs = nn.ModuleDict(outputs)
+        else:
+            raise TypeError('`outputs` is not either list or dict')
 
     def prepare_data(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         data['coord'] = data['coord'].to(torch.float)
@@ -102,7 +107,7 @@ class AIMNet2Q(nn.Module):
         _q = q.squeeze(-1) + _q
         data['charges'] = nqe(data['charge'], q, f)
 
-        for m in self.outputs:
+        for m in self.outputs.children():
             data = m(data)
 
         return data
@@ -110,7 +115,7 @@ class AIMNet2Q(nn.Module):
 
 class AIMNet2E(nn.Module):
     def __init__(self, aev: Dict, nfeature: int, d2features: bool, ncomb_v: int, aim_size: int, hidden1: List[int], hidden2: List[int],
-                 outputs: List[nn.Module], share_aev=True, nblist=False):
+                 outputs: Union[List[nn.Module], Dict[str, nn.Module]], share_aev=True, nblist=False):
         super().__init__()
         if nblist:
             self.add_module('aev', AEVSV_NB(**aev))
@@ -151,7 +156,12 @@ class AIMNet2E(nn.Module):
         self.add_module('mlp1', mlp1)
         self.add_module('mlp2', mlp2)
 
-        self.add_module('outputs', nn.ModuleList(outputs))
+        if isinstance(outputs, list):
+            self.outputs = nn.ModuleList(outputs)
+        elif isinstance(outputs, dict):
+            self.outputs = nn.ModuleDict(outputs)
+        else:
+            raise TypeError('`outputs` is not either list or dict')
 
     def prepare_data(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         data['coord'] = data['coord'].to(torch.float)
@@ -207,18 +217,25 @@ class AIMNet2E(nn.Module):
         _in = torch.cat([a, q.unsqueeze(-1), avfa, avfq], dim=-1)
         data['aim'] = self.mlp2(_in)
 
-        for m in self.outputs:
+        for m in self.outputs.children():
             data = m(data)
 
         return data
 
 
 class AIMNet2QE(nn.Module):
-    def __init__(self, qnet: Dict, enet: Dict, outputs: List[Dict], detached_q=True):
+    def __init__(self, qnet: Dict, enet: Dict, outputs: Union[List[nn.Module], Dict[str, nn.Module]], detached_q=True):
         super().__init__()
         self.add_module('qnet', AIMNet2Q(**qnet))
         self.add_module('enet', AIMNet2E(**enet))
-        self.add_module('outputs', nn.ModuleList(outputs))
+
+        if isinstance(outputs, list):
+            self.outputs = nn.ModuleList(outputs)
+        elif isinstance(outputs, dict):
+            self.outputs = nn.ModuleDict(outputs)
+        else:
+            raise TypeError('`outputs` is not either list or dict')
+
         self.detached_q = detached_q
 
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
@@ -230,14 +247,14 @@ class AIMNet2QE(nn.Module):
         data = self.enet(data)
         q.append(data['charges'])
         data['charges'] = torch.stack(q, dim=0)
-        for o in self.outputs:
+        for o in self.outputs.children():
             data = o(data)
         return data
 
 
 class AIMNet2ENoChg(nn.Module):
     def __init__(self, aev: Dict, nfeature: int, d2features: bool, ncomb_v: int, aim_size: int, hidden1: List[int], hidden2: List[int],
-                 outputs: List[nn.Module], nblist=False):
+                 outputs: Union[List[nn.Module], Dict[str, nn.Module]], nblist=False):
         super().__init__()
         if nblist:
             self.add_module('aev', AEVSV_NB(**aev))
@@ -278,7 +295,12 @@ class AIMNet2ENoChg(nn.Module):
         self.add_module('mlp1', mlp1)
         self.add_module('mlp2', mlp2)
 
-        self.add_module('outputs', nn.ModuleList(outputs))
+        if isinstance(outputs, list):
+            self.outputs = nn.ModuleList(outputs)
+        elif isinstance(outputs, dict):
+            self.outputs = nn.ModuleDict(outputs)
+        else:
+            raise TypeError('`outputs` is not either list or dict')
 
     def prepare_data(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         data['coord'] = data['coord'].to(torch.float)
@@ -327,7 +349,7 @@ class AIMNet2ENoChg(nn.Module):
         _in = torch.cat([a, q.unsqueeze(-1), avfa, avfq], dim=-1)
         data['aim'] = self.mlp2(_in)
 
-        for m in self.outputs:
+        for m in self.outputs.children():
             data = m(data)
 
         return data
