@@ -7,8 +7,6 @@ data:
 
 optimizer:
   class: torch_optimizer.RAdam
-  #class: torch_optimizer.Lamb
-  #class: torch_optimizer.Ranger
   kwargs:
     lr: 5.0001e-4
     weight_decay: 1.0e-6
@@ -24,7 +22,7 @@ optimizer:
 
 
 scheduler:
-  class: ignite.contrib.handlers.param_scheduler.CosineAnnealingScheduler
+  class: ignite.handlers.param_scheduler.CosineAnnealingScheduler
   kwargs:
     start_value: 5.00001e-4 
     end_value: 1.00001e-5
@@ -37,7 +35,7 @@ scheduler:
 #  low_lr: 1.0001e-5
 
 loss:
-  class: psloss.PerSampleMTLoss
+  class: aimnet.train.psloss.PerSampleMTLoss
   kwargs:
     components:
      - fn: psloss.energy_loss_fn

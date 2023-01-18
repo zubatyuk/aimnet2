@@ -157,8 +157,8 @@ class Dipole(nn.Module):
 class Quadrupole(Dipole):
     def __init__(self, key_in: str = 'charges',
                  key_out: str = 'quadrupole',
-                 center_coord: bool = False,
-                 train_scale=True):
+                 center_coord: bool = False
+                 ):
         super().__init__(key_in=key_in, key_out=key_out, center_coord=center_coord)
 
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
@@ -180,13 +180,14 @@ class Quadrupole(Dipole):
 class Output(nn.Module):
     def __init__(self, mlp: Union[Dict, nn.Module], n_in: int, n_out: int,
                  key_in: str, key_out: str,
-                 ):
+                 apply_fn : str = 'none'):
         super().__init__()
         self.key_in = key_in
         self.key_out = key_out
         if not isinstance(mlp, nn.Module):
             mlp = MLP(n_in=n_in, n_out=n_out, **mlp)
         self.add_module('mlp', mlp)
+        self.apply_fn = apply_fn
 
     def extra_repr(self) -> str:
         return f'key_in: {self.key_in}, key_out: {self.key_out}'
@@ -195,7 +196,39 @@ class Output(nn.Module):
         v = self.mlp(data[self.key_in])
         if 'pad_mask' in data and data['pad_mask'].numel() > 1:
             v = v.masked_fill(data['pad_mask'].unsqueeze(-1), 0.0)
-        data[self.key_out] = v.squeeze(-1)
+        v = v.squeeze(-1)
+        if self.apply_fn == 'pow2':
+            v = v.pow(2)
+        data[self.key_out] = v.squeeze(-1) 
+        return data
+
+
+class NQE(nn.Module):
+    def __init__(self, key_in: str, key_out: str):
+        super().__init__()
+        self.key_in = key_in
+        self.key_out = key_out
+
+    def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        q, f = data[self.key_in].unbind(dim=-1)
+        q = ops.nqe(data['charge'], q, f)
+        data[self.key_out] = q
+        return data
+
+
+class ExpMult(nn.Module):
+    def __init__(self, key_in: str, key_out: str, data: Dict[int, float] = None):
+        super().__init__()
+        self.key_in = key_in
+        self.key_out = key_out
+        self.register_parameter('weights', nn.Parameter(
+           torch.zeros(128), requires_grad=False))
+        if data is not None:
+            for k, v in data.items():
+                self.weights[k] = v
+
+    def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        data[self.key_out] = self.weights[data['numbers']] * data[self.key_in].exp()
         return data
 
 
@@ -451,7 +484,7 @@ class DispParam(nn.Module):
 
 
 class D3BJ(nn.Module):
-    def __init__(self, a1: float, a2: float, s8: float, s6: float = 1.0, key_out='disp_energy'):
+    def __init__(self, a1: float, a2: float, s8: float, s6: float = 1.0, key_in_c6='dftd3_c6', key_in_alpha='dftd4_alpha', key_out='disp_energy'):
         super().__init__()
 
         ## https://github.com/dftd4/dftd4/blob/main/src/dftd4/data/r4r2.f90
@@ -487,12 +520,14 @@ class D3BJ(nn.Module):
         self.a2 = a2
         self.s6 = s6
         self.s8 = s8
+        self.key_in_c6 = key_in_c6
+        self.key_in_alpha = key_in_alpha
         self.key_out = key_out
 
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         d_ij = data['d_ij'] * 1.889716
-        c6i = data['c6i']
-        alpha = data['alpha']
+        c6i = data[self.key_in_c6]
+        alpha = data[self.key_in_alpha]
         numbers = data['numbers']
         
         c6_i, c6_j = c6i.unsqueeze(-1), c6i.unsqueeze(-2)
@@ -543,10 +578,10 @@ class D3BJ_NB(D3BJ):
         d_ij = data['d_ij_coul'] * 1.889716
         numbers = data['numbers']
 
-        c6_i = data['c6i'].unsqueeze(-1)
-        c6_j = data['c6i'][data['idx_j_coul']]
-        alpha_i = data['alpha'].unsqueeze(-1).clamp(min=1e-6)
-        alpha_j = data['alpha'][data['idx_j_coul']].clamp(min=1e-6)
+        c6_i = data[self.key_in_c6].unsqueeze(-1)
+        c6_j = data[self.key_in_c6][data['idx_j_coul']]
+        alpha_i = data[self.key_in_alpha].unsqueeze(-1).clamp(min=1e-6)
+        alpha_j = data[self.key_in_alpha][data['idx_j_coul']].clamp(min=1e-6)
 
         c6ij = 2 * c6_i * c6_j / (c6_i * alpha_j / alpha_i + c6_j * alpha_i / alpha_j).clamp(min=1e-6)
 

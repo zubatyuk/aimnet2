@@ -404,6 +404,23 @@ class SizeGroupedDataset:
 
         return dict((i, sap[i]) for i in present_elements)
 
+    def apply_pertype_logratio(self, key_in='volumes', key_out='volumes',
+                            numbers_key='numbers', sap_dict=None):
+        if sap_dict is None:
+            numbers = self.concatenate('numbers')
+            present_elements = sorted(np.unique(numbers))
+            x = self.concatenate(key_in)
+            sap_dict = dict()
+            for n in present_elements:
+                sap_dict[n] = np.median(x[numbers == n])
+        sap = np.zeros(max(sap_dict.keys())+1)
+        for n, v in sap_dict.items():
+            sap[n] = v
+        def fn(g):
+            g[key_out] = np.log(g[key_in] / sap[g[numbers_key]])
+        self.apply(fn)
+        return sap_dict
+
     def numpy_batches(self, batch_size=128, keys=None):
         for g in self.values():
             yield from g.iter_batched(batch_size, keys)
@@ -495,13 +512,11 @@ class SizeGrouppedSampler:
 
 
 class RandomWeightedSampler:
-    def __init__(self, ds, batch_size, num_batches, seed=None, alpha=0.01, beta=0.0, uniform=False, peratom_batches=False):
+    def __init__(self, ds, batch_size, num_batches, seed=None, uniform=False, peratom_batches=False):
         self.ds = ds
         self.batch_size = batch_size
         self.num_batches = num_batches
         self.peratom_batches = peratom_batches
-        self.beta = beta
-        self.alpha = alpha # * (num_batches * batch_size) / len(ds)
         self.epoch = 0
         self.seed = seed or np.random.randint(1000000)
         self.uniform = uniform

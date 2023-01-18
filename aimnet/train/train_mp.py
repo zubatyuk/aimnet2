@@ -9,7 +9,7 @@ import torch
 from torch import jit, nn, optim, Tensor
 import ignite.distributed as idist
 from ignite.handlers import ModelCheckpoint, global_step_from_engine, TerminateOnNan
-from ignite.contrib.handlers import param_scheduler
+from ignite.handlers import param_scheduler
 from ignite.engine import Events, _prepare_batch, Engine
 from ignite.contrib.handlers.wandb_logger import WandBLogger, OptimizerParamsHandler
 from ignite.contrib.handlers.tqdm_logger import ProgressBar
@@ -17,15 +17,11 @@ import re
 import yaml
 from aimnet.modules import Forces
 import numpy as np
-import sys
 
-#torch.backends.cuda.matmul.allow_tf32 = False
-#torch.backends.cudnn.allow_tf32 = False
 
-JIT = False
-DIPOLECHG = True
-QUADCHG = False
-
+if os.environ.get('CUDA_DISABLE_TF32'):
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
 
 WORLD_SIZE = int(os.environ.get('WORLD_SIZE', '1'))
 LOCAL_RANK = int(os.environ.get('LOCAL_RANK', '0'))
@@ -40,39 +36,69 @@ else:
 def make_seed():
     return int.from_bytes(os.urandom(2), 'big')
 
+
+def pop_bad_ids(ds):
+    if '_id' in ds.datakeys() and os.environ.get('BAD_IDS'):
+        bad_ids = np.loadtxt(os.environ.get('BAD_IDS'), dtype='S')
+        for _n, g in list(ds.items()):
+            w = np.isin(g['_id'], bad_ids)
+            if w.any():
+                g = g.sample(~w)
+            if len(g):
+                ds._data[_n] = g
+            else:
+                ds._data.pop(g)
+    return ds
+
+
+def load_dataset(config, typ='train'):
+    keys = config['loader']['x'] + config['loader']['y']
+    ds_mod = get_module(config['class'])
+    ds = ds_mod(config[typ], keys=keys, **config.get('kwargs', {}))
+    logging.info(f"Loaded {typ} dataset from {config[typ]} with {len(ds)} samples.")
+    # try bad ids
+    _n0 = len(ds)
+    ds = pop_bad_ids(ds)
+    if len(ds) != _n0:
+        logging.info(f"Using {len(ds)} samples for {typ}")
+    # self atomic energies
+    if 'energy' in keys:
+        sae_name = config['train'].replace('.h5', '.sae')
+        sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
+        ds.apply_peratom_shift('energy', 'energy', sap_dict=sae)
+    # average volumes
+    if 'volumes' in keys:
+        sae_name = config['train'].replace('.h5', '.avg_vols')
+        sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
+        ds.apply_pertype_logratio('volumes', 'volumes')
+    return ds
+
+
 def get_loaders(config: Dict):
+    # create seed
     seed = make_seed()
     if WORLD_SIZE > 1:
         seed = idist.all_reduce(seed)
-    kwargs = dict(pin_memory=True, rank=LOCAL_RANK, world_size=WORLD_SIZE, seed=seed)
-    ds_mod = get_module(config['class'])
-    ds_train = ds_mod(config['train'], **config.get('kwargs', {}))
-    sae = yaml.load(open(config['train'] + '/sae.yml').read(), Loader=yaml.SafeLoader)
-    ds_train.apply_peratom_shift('energy', 'energy', sap_dict=sae)
-    for g in ds_train.groups:
-        if DIPOLECHG:
-            g['spatial_extent'] = np.clip((g['coord'] ** 2).sum(axis=-2), a_min=1.0e-3, a_max=None)
-        if QUADCHG:
-            c = g['coord']
-            g['spatial_extent2'] = np.clip((np.concatenate([c**2, c * np.roll(c, -1, -1)], axis=-1) ** 2).sum(axis=-2), a_min=1.0e-3, a_max=None)
-    ds_train.merge_groups(2048)
-    logging.info(f"Loaded train dataset from {config['train']} with {len(ds_train)} samples.")
-    loader_kwargs = config['loader']
-    loader_kwargs.update(kwargs)
-    loader_train = ds_train.get_loader(shuffle=True, **loader_kwargs)
+
+    ds_train = load_dataset(config, 'train')
     if config.get('val'):
-        ds_val = ds_mod(config['val'], **config.get('kwargs', {}))
-        ds_val.apply_peratom_shift('energy', 'energy', sap_dict=sae)
-        for g in ds_val.groups:
-            if DIPOLECHG:
-                g['spatial_extent'] = np.clip((g['coord'] ** 2).sum(axis=-2), a_min=1.0e-3, a_max=None)
-            if QUADCHG:
-                c = g['coord']
-                g['spatial_extent2'] = np.clip((np.concatenate([c**2, c * np.roll(c, -1, -1)], axis=-1) ** 2).sum(axis=-2), a_min=1.0e-3, a_max=None)
-        logging.info(f"Loaded val dataset from {config['val']} with {len(ds_val)} samples.")
-        loader_val = ds_val.get_loader(shuffle=False, **loader_kwargs)
+        ds_val = load_dataset(config, 'val')
     else:
-        loader_val = None
+        logging.info(f'Will use 10% of train dataset for validation.')
+        ds_val = ds_train.random_split(0.1)[0]
+    
+    # merge-pad groups
+    ds_train.merge_groups(8 * config['loader']['batch_size'])
+    
+    # train loader
+    num_batches = 500
+    loader_kwargs = config['loader']
+    loader_train = ds_train.weighted_loader(num_batches=num_batches, seed=seed+LOCAL_RANK, pin_memory=True, **loader_kwargs)
+
+    # val loader
+    config['loader']['batch_size'] *= 2
+    loader_val = ds_val.get_loader(shuffle=False, pin_memory=True, rank=LOCAL_RANK, world_size=WORLD_SIZE, **config['loader'])
+
     return loader_train, loader_val
 
 
@@ -83,8 +109,6 @@ def create_supervised_trainer(
     device: Optional[Union[str, torch.device]] = None,
     non_blocking: bool = False,
     prepare_batch: Callable = _prepare_batch,
-    output_transform: Callable = lambda x, y, y_pred, loss: loss.item(),
-    deterministic: bool = False,
 ) -> Engine:
     """Factory function for creating a trainer for supervised models.
     Args:
@@ -120,14 +144,21 @@ def create_supervised_trainer(
         model.train()
         optimizer.zero_grad()
         x, y = prepare_batch(batch, device=device, non_blocking=non_blocking)
+
         y_pred = model(x)
 
-        loss = loss_fn(y_pred, y)
+        persample_loss = loss_fn(y_pred, y)
+        loss = persample_loss.mean()
         loss.backward()
 
         torch.nn.utils.clip_grad_value_(model.parameters(), 0.4)
-        #torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
         optimizer.step()
+
+        persample_loss = persample_loss.detach()
+        _n = x['coord'].shape[1]
+        idx = x['sample_idx'].cpu().numpy()
+        engine.state.dataloader.dataset[_n]['sample_weight_upd'][idx] = persample_loss.cpu().numpy()
+        engine.state.dataloader.dataset[_n]['sample_weight_upd_mask'][idx] = True
 
         return loss.item()
 
@@ -186,9 +217,12 @@ def create_supervised_evaluator(
         model.eval()
         if not next(iter(batch[0].values())).numel():
             return None, None
+
+        x, y = prepare_batch(batch, device=device, non_blocking=non_blocking)
+
         with torch.no_grad():
-            x, y = prepare_batch(batch, device=device, non_blocking=non_blocking)
-            y_pred = model(x)
+           y_pred = model(x)
+
         return output_transform(x, y, y_pred)
 
     evaluator = Engine(_inference)
@@ -241,7 +275,7 @@ def build_config(model_cfg, train_cfg, hp_cfg, hp_search_mode=False):
             f.write(yaml.dump(train_cfg))
 
     # datasets must be defined  with AIMNET_TRAIN and AIMNET_VAL env vars
-    train_cfg['data']['train'] = os.environ['AIMNET_TRAIN']
+    train_cfg['data']['train'] = os.environ['AIMNET_TRAIN'].replace('__N.', '__' + str(LOCAL_RANK)+'.')
     train_cfg['data']['val'] = os.environ.get('AIMNET_VAL')
     return model_cfg, train_cfg
 
@@ -303,6 +337,8 @@ def build_scheduler(optimizer, config: Dict) -> param_scheduler.ParamScheduler:
     for cfg in config:
         cls = get_module(cfg['class'])
         sched.append(cls(optimizer, 'lr', **cfg.get('kwargs', {})))
+        #if hasattr(sched[-1], 'event_index'):
+        #    sched[-1].event_index = 1
     if len(sched) > 1:
         scheduler = param_scheduler.ConcatScheduler(schedulers=sched, durations=durations)
     else:
@@ -317,8 +353,6 @@ def build_engine(net, config, loader_val=None):
     loss_fn = build_module(train_cfg['loss'])
     if isinstance(loss_fn, nn.Module):
         loss_fn = loss_fn.to(device)
-        if JIT:
-            loss_fn = torch.jit.script(loss_fn)
         optimizer.param_groups[0]['params'].extend(filter(lambda p: p.requires_grad, loss_fn.parameters()))
 
     optimizer = idist.auto_optim(optimizer)
@@ -333,16 +367,11 @@ def build_engine(net, config, loader_val=None):
                 output_transform=lambda loss: {"loss": loss},
                 tag='train'
             )
-        wandb_logger.attach(
-            trainer,
-            log_handler=EpochLRLogger(optimizer),
-            event_name=Events.EPOCH_STARTED
-            )
 
     trainer.add_event_handler(Events.EPOCH_COMPLETED, TerminateOnNan())
     if loader_val is not None:
         validator = create_supervised_evaluator(net, metrics={'multi': metric}, device=device)
-        trainer.add_event_handler(Events.EPOCH_COMPLETED, validator.run, data=loader_val)
+        trainer.add_event_handler(Events.EPOCH_COMPLETED(every=10), validator.run, data=loader_val)
         if LOCAL_RANK == 0:
             wandb_logger.attach_output_handler(
                     validator,
@@ -364,6 +393,12 @@ def build_engine(net, config, loader_val=None):
         trainer.add_event_handler(Events.EPOCH_STARTED, scheduler)
 
     if LOCAL_RANK == 0:
+        wandb_logger.attach(
+            trainer,
+            log_handler=EpochLRLogger(optimizer),
+            event_name=Events.EPOCH_STARTED
+            )
+
         if loader_val is not None:
             chk_engine = validator
             score_function = lambda engine: 1.0 / engine.state.metrics['loss']
@@ -383,22 +418,22 @@ def build_engine(net, config, loader_val=None):
 
 
 def unwrap_module(net):
-    if isinstance(net, torch.nn.parallel.DistributedDataParallel):
-        net = net.module
     if isinstance(net, Forces):
+        net = net.module
+    if isinstance(net, torch.nn.parallel.DistributedDataParallel):
         net = net.module
     return net
 
 
 def run(local_rank, model_cfg, train_cfg, load, save):
-    model = build_model(model_cfg, compile=JIT)
+    model = build_model(model_cfg, compile=False)
     if load is not None:
         device = next(model.parameters()).device
         print('Loading weights from file', load)
         sd = torch.load(load, map_location=device)
         print(unwrap_module(model).load_state_dict(sd, strict=False))
     train_loader, val_loader = get_loaders(train_cfg['data'])
-    if 'forces' in next(iter(val_loader))[1]:
+    if 'forces' in next(iter(train_loader))[1]:
         model = Forces(model)
     trainer = build_engine(model, train_cfg, val_loader)
     if local_rank == 0:

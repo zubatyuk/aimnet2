@@ -12,7 +12,8 @@ kwargs:
       rc_s: 5.0
       nshifts_s: 16
     outputs:
-      - class: aimnet.modules.Output
+      energy_mlp:
+        class: aimnet.modules.Output
         kwargs:
           n_in: 256 
           n_out: 1
@@ -23,29 +24,34 @@ kwargs:
             last_linear: true
             hidden: [128, 128]
 
-      - class: aimnet.modules.AtomicShift
+      atomic_shift:
+        class: aimnet.modules.AtomicShift
         kwargs:
           key_in: 'energy'
           key_out: 'energy'
 
-      - class: aimnet.modules.AtomicSum
+      atomic_sum:
+        class: aimnet.modules.AtomicSum
         kwargs:
           key_in: 'energy'
           key_out: 'energy'
 
-      - class: aimnet.modules.SRRep
+      shortrange:
+        class: aimnet.modules.SRRep
         kwargs:
           key_out: 'energy'
           reduce_sum: true
           cutoff_fn: exp_cutoff
           rc: 2.0
 
-      - class: aimnet.modules.LRCoulomb
+      lrcoulomb:
+        class: aimnet.modules.LRCoulomb
         kwargs:
           key_in: 'charges'
           key_out: 'energy'          
 
-      - class: aimnet.modules.Output
+      disp_mlp:
+        class: aimnet.modules.Output
         kwargs:
           n_in: 256
           n_out: 2
@@ -57,7 +63,8 @@ kwargs:
             last_linear: true
             hidden: [128, 64]
 
-      - class: aimnet.modules.DispParam
+      disp_transform:
+        class: aimnet.modules.DispParam
         kwargs:
           ref: d3
 

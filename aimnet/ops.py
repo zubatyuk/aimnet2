@@ -55,6 +55,19 @@ def nqe(Q, q_u, f):
     return q
 
 
+def nse(Q, q_u, f):
+    f = f.pow(2)
+    if f.ndim > 2:
+        Q_u = q_u.sum(-2, keepdim=True)
+        F_s = f.sum(-2, keepdim=True) + 1e-6
+        q = q_u + f * (Q.unsqueeze(-2) - Q_u) / F_s
+    else:
+        Q_u = q_u.sum(0)
+        F_s = f.sum(0) + 1e-6
+        q = q_u + f * (Q - Q_u) / F_s
+    return q
+    
+
 def calc_pad_mask(data: Dict[str, Tensor]) -> Dict[str, Tensor]:
     numbers = data['numbers']
     mask = numbers == 0
