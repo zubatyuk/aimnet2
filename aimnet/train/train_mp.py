@@ -47,12 +47,14 @@ def pop_bad_ids(ds):
             if len(g):
                 ds._data[_n] = g
             else:
-                ds._data.pop(g)
+                ds._data.pop(_n)
     return ds
 
 
 def load_dataset(config, typ='train'):
     keys = config['loader']['x'] + config['loader']['y']
+    if os.environ.get('BAD_IDS'):
+        keys.append('_id')
     ds_mod = get_module(config['class'])
     ds = ds_mod(config[typ], keys=keys, **config.get('kwargs', {}))
     logging.info(f"Loaded {typ} dataset from {config[typ]} with {len(ds)} samples.")
@@ -71,6 +73,18 @@ def load_dataset(config, typ='train'):
         sae_name = config['train'].replace('.h5', '.avg_vols')
         sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
         ds.apply_pertype_logratio('volumes', 'volumes')
+    if 'dftd3_c6' in keys:
+        sae_name = config['train'].replace('.h5', '.avg_c6')
+        sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
+        ds.apply_pertype_logratio('dftd3_c6', 'dftd3_c6')
+    if 'dftd4_c6' in keys:
+        sae_name = config['train'].replace('.h5', '.avg_c6')
+        sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
+        ds.apply_pertype_logratio('dftd4_c6', 'dftd4_c6')        
+    if 'dftd4_alpha' in keys:
+        sae_name = config['train'].replace('.h5', '.avg_alpha')
+        sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
+        ds.apply_pertype_logratio('dftd4_alpha', 'dftd4_alpha')
     return ds
 
 
@@ -286,7 +300,7 @@ def build_model(config, compile=True, force_mod=None):
         model = jit.script(model)
     if force_mod is not None:
         model = force_mod(model)
-    model = idist.auto_model(model)
+    model = idist.auto_model(model, find_unused_parameters=True)
     logging.info('Build model:')
     logging.info(str(model))
     return model
@@ -295,18 +309,18 @@ def build_model(config, compile=True, force_mod=None):
 def get_parameters(model: nn.Module, config: Dict) -> List:
     force_train = config.get('force_train', [])
     force_notrain = config.get('force_notrain', [])
-    for n, p in model.named_parameters():
-        if any(re.match(x, n) for x in force_train):
-            p.requires_grad_(True)
-        if any(re.match(x, n) for x in force_notrain):
-            p.requires_grad_(False)
-    params = list(filter(lambda x: x.requires_grad, model.parameters()))
-    logging.info(f"Trainable parameters:")
+    params = list()
     _n = 0
+    logging.info(f"Trainable parameters:")
     for n, p in model.named_parameters():
+        if any(re.search(x, n) for x in force_notrain):
+            p.requires_grad_(False)
+        if any(re.search(x, n) for x in force_train):
+            p.requires_grad_(True)
         if p.requires_grad:
+            params.append(p)
             logging.info(f"{n} {p.shape}")
-        _n += p.numel()
+            _n += p.numel()
     logging.info(f'Total: {_n}')
     return params
 
@@ -429,9 +443,9 @@ def run(local_rank, model_cfg, train_cfg, load, save):
     model = build_model(model_cfg, compile=False)
     if load is not None:
         device = next(model.parameters()).device
-        print('Loading weights from file', load)
+        logging.info(f'Loading weights from file {load}')
         sd = torch.load(load, map_location=device)
-        print(unwrap_module(model).load_state_dict(sd, strict=False))
+        logging.info(unwrap_module(model).load_state_dict(sd, strict=False))
     train_loader, val_loader = get_loaders(train_cfg['data'])
     if 'forces' in next(iter(train_loader))[1]:
         model = Forces(model)
