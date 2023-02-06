@@ -547,7 +547,11 @@ class RandomWeightedSampler:
     def __next__(self):
         if self._count == self.num_batches:
             raise StopIteration
-        g = np.random.choice(self._groups, replace=False, p=self._group_weights)
+            
+        #g = np.random.choice(self._groups, replace=False, p=self._group_weights)
+        selection = np.random.choice(np.arange(len(self._groups)), replace=False, p=self._group_weights)
+        g = self._groups[selection]
+        
         #  oops. assume ds has coord
         _n = g['coord'].shape[1]
         if self.peratom_batches:
