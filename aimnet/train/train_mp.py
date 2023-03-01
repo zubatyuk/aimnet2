@@ -65,7 +65,9 @@ def load_dataset(config, typ='train'):
         logging.info(f"Using {len(ds)} samples for {typ}")
     # self atomic energies
     if 'energy' in keys:
-        sae_name = config['train'].replace('.h5', '.sae')
+        # use 'train.energy_sae' key from train config as SAE file
+        # default to train dataset name with '.h5' extension replaced to '.sae'
+        sae_name = config.get('energy_sae', config['train'].replace('.h5', '.sae'))
         sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
         ds.apply_peratom_shift('energy', 'energy', sap_dict=sae)
     # average volumes
