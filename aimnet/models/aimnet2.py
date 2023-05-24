@@ -77,7 +77,9 @@ class AIMNet2(nn.Module):
     def _prepare_in_a(self, data: Dict[str, Tensor]) -> Tensor:
         a_i = data['a']
         if 'idx_j' in data:
-            a_j = a_i[data['idx_j']]
+            # a_j = a_i[data['idx_j']]
+            _s0, _s1, _s2, _s3 = data['idx_j'].shape[0], data['idx_j'].shape[1], a_i.shape[-2], a_i.shape[-1]
+            a_j = torch.index_select(a_i, 0, data['idx_j'].flatten()).view(_s0, _s1, _s2, _s3)
         else:
             a_j = a_i
         if self.d2features:
@@ -89,7 +91,9 @@ class AIMNet2(nn.Module):
     def _prepare_in_q(self, data: Dict[str, Tensor]) -> Tensor:
         q_i = data['charges'].unsqueeze(-1)
         if 'idx_j' in data:
-            q_j = q_i[data['idx_j']]
+            # q_j = q_i[data['idx_j']]
+            _s0, _s1 = data['idx_j'].shape[0], data['idx_j'].shape[1]
+            q_j = torch.index_select(q_i, 0, data['idx_j'].flatten()).view(_s0, _s1, 1)
         else:
             q_j = q_i
         avf_q = self.conv_q(q_j, data['gs'], data['gv'])
