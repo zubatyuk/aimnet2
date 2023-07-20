@@ -5,6 +5,7 @@ from typing import Dict, List, Sequence, Tuple, Union
 import numpy as np
 import zarr
 
+from .sgdataset import DataGroup
 
 # from torch.utils.data.dataloader import DataLoader, default_collate
 
@@ -96,7 +97,7 @@ class ZarrGroup:
             keys = self.keys()
         if isinstance(idx, int):
             idx = slice(idx, idx + 1)
-        return self.__class__(dict((k, self[k][idx]) for k in keys))
+        return DataGroup(dict((k, self[k][idx]) for k in keys))
 
     def random_split(self, *fractions, seed=None):
         assert 0 < sum(fractions) <= 1
@@ -105,7 +106,7 @@ class ZarrGroup:
         np.random.seed(seed)
         np.random.shuffle(idx)
         sections = np.around(np.cumsum(fractions) * len(self)).astype(np.int)
-        return [self.__class__(self.sample(sidx)) if len(sidx) else self.__class__() for sidx in
+        return [DataGroup(self.sample(sidx)) if len(sidx) else self.__class__() for sidx in
                 np.array_split(idx, sections)]
 
     def cv_split(self, cv: int = 5, seed=None):
