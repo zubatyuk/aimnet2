@@ -5,7 +5,8 @@ from typing import Dict, List, Sequence, Tuple, Union
 import numpy as np
 import zarr
 
-from .sgdataset import DataGroup
+from aimnet.data.sgdataset import DataGroup
+
 
 # from torch.utils.data.dataloader import DataLoader, default_collate
 
@@ -106,7 +107,7 @@ class ZarrGroup:
         np.random.seed(seed)
         np.random.shuffle(idx)
         sections = np.around(np.cumsum(fractions) * len(self)).astype(np.int)
-        return [DataGroup(self.sample(sidx)) if len(sidx) else self.__class__() for sidx in
+        return [self.sample(sidx) if len(sidx) else DataGroup() for sidx in
                 np.array_split(idx, sections)]
 
     def cv_split(self, cv: int = 5, seed=None):
@@ -159,21 +160,22 @@ class ZarrGroup:
                 del self[k]
 
     def apply_peratom_shift(self, sap_dict, key_in='energy', key_out='energy',
-                            numbers_key='numbers'):
+            numbers_key='numbers'):
         ntyp = max(sap_dict.keys()) + 1
         sap = np.zeros(ntyp) * np.nan
         for k, v in sap_dict.items():
             sap[k] = v
         self[key_out] = self[key_in][:] - \
-                              sap[self[numbers_key][:]].sum(axis=-1)
+                        sap[self[numbers_key][:]].sum(axis=-1)
+
 
 
 class SizeGroupedDataset:
-    def __init__(self, data: Union[
-        str, List[str], Dict[int, str], Dict[int, Dict[str, np.ndarray]], Dict[
-            int, ZarrGroup], None] = None, keys=None):
-        self._data = dict()
+    def __init__(self, storage, data: Union[
+        str, List[str], Dict[int, str], Dict[int, Dict[str, np.ndarray]], None] = None, keys=None):
+        self._root = zarr.group(storage)
         self._meta = dict()
+        self._groups = dict()
         if isinstance(data, str):
             if os.path.isdir(data):
                 self.load_datadir(data, keys=keys)
@@ -193,28 +195,35 @@ class SizeGroupedDataset:
                 f'{path} does not exist or not a directory.')
         for f in glob(os.path.join(path, '???.npz')):
             k = int(os.path.basename(f)[:3])
-            self[k] = DataGroup(f, keys=keys)
+            self._root.create_group(f"{k:03}")
+            npz = np.load(f)
+            self[k] = ZarrGroup(group=self._root[f"{k:03}"],
+                                data=npz,
+                                keys=keys)
 
-    def load_files(self, files, keys=None):
-        for fil in files:
-            if not os.path.isfile(fil):
-                raise FileNotFoundError(f'{fil} does not exist or not a file.')
-            k = int(os.path.splitext(os.path.basename(fil))[0])
-            self[k] = DataGroup(fil, keys=keys)
+    # def load_files(self, files, keys=None):
+    #     for fil in files:
+    #         if not os.path.isfile(fil):
+    #             raise FileNotFoundError(f'{fil} does not exist or not a file.')
+    #         k = int(os.path.splitext(os.path.basename(fil))[0])
+    #         self[k] = DataGroup(fil, keys=keys)
 
     def load_dict(self, data, keys=None):
         for k, v in data.items():
-            self[k] = DataGroup(v, keys=keys)
+            self._root.create_group(f"{k:03}")
+            self[k] = ZarrGroup(group=self._root[f"{k:03}"],
+                                data=v,
+                                keys=keys)
 
-    def load_h5(self, data, keys=None):
-        with h5py.File(data, 'r') as f:
-            for k, g in f.items():
-                k = int(k)
-                self[k] = DataGroup(g, keys=keys)
-            self._meta = dict(f.attrs)
+    # def load_h5(self, data, keys=None):
+    #     with h5py.File(data, 'r') as f:
+    #         for k, g in f.items():
+    #             k = int(k)
+    #             self[k] = DataGroup(g, keys=keys)
+    #         self._meta = dict(f.attrs)
 
     def keys(self):
-        return sorted(self._data.keys())
+        return sorted([int(i) for i in self._root.group_keys()])
 
     def values(self):
         return [self[k] for k in self.keys()]
@@ -223,7 +232,7 @@ class SizeGroupedDataset:
         return [(k, self[k]) for k in self.keys()]
 
     def datakeys(self):
-        return next(iter(self._data.values())).keys() if self._data else set()
+        return next(iter(self._root.values())).keys() if len(self) else set()
 
     @property
     def groups(self):
@@ -236,17 +245,18 @@ class SizeGroupedDataset:
         if not isinstance(key, int):
             raise ValueError(
                 f'Failed to set key of type {type(key)}, expected int.')
-        if not isinstance(value, DataGroup):
+        if not isinstance(value, ZarrGroup):
             raise ValueError(
-                f'Failed to set item of wrong type. Expected DataGroup, got {type(value)}.')
-        if self._data:
+                f'Failed to set item of wrong type. Expected ZarrGroup, got {type(value)}.')
+        if len(self):
             if set(self.datakeys()) != set(value.keys()):
                 raise ValueError(f'Wrong set of data keys.')
-        self._data[key] = value
+
+        self._groups[key] = value
 
     def __getitem__(self, item: Union[int, Tuple[int, Sequence]]) -> Union[Dict, Tuple[Dict, Dict]]:
         if isinstance(item, int):
-            ret = self._data[item]
+            ret = self._groups[item]
         else:
             grp, idx = item
             if self.loader_mode:
@@ -264,11 +274,11 @@ class SizeGroupedDataset:
         pass
 
     def rename_datakey(self, old, new):
-        for g in self.groups:
+        for g in self._groups:
             g.rename_key(old, new)
 
     def apply(self, fn):
-        for grp in self.groups:
+        for grp in self._groups:
             fn(grp)
 
     def merge(self, other, strict=True):
@@ -626,7 +636,6 @@ if __name__ == "__main__":
 
     zarr_group["indices"] = item["indices"]
     zarr_group["another_forces"] = item["forces"]
-
 
     another_group = root.create_group("another_group")
 
