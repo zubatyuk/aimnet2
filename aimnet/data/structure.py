@@ -22,7 +22,6 @@ class DataGroup:
             strict: bool = True,
     ):
         self._root = None
-        self._modified_keys = set()
         self.strict = strict
         self.mask = mask
         self._data = self.load_data(data)
@@ -71,7 +70,6 @@ class DataGroup:
         return self._data.values()
 
     def __setitem__(self, key, value):
-        self._modified_keys.add(key)
         if self.cow or self._root is None:
             self._data[key] = to_array(value)
         else:
@@ -92,21 +90,19 @@ class DataGroup:
         return val
 
     def __delitem__(self, key):
-        if isinstance(self._data[key], zarr.hierarchy.Array):
-            self._modified_keys.add(key)
         del self._data[key]
         if not (self.cow or self._root is None):
             del self._root[key]
 
     def flush(self):
-        if self._root is not None:
-            for key in self._modified_keys:
-                if key in self._data:
-                    self._data[key] = self._root.array(key, self._data[key],
-                                                       overwrite=True)
-                else:
+        if self._root is not None and self.cow:
+            for key in self.keys():
+                if isinstance(self._data[key], ndarray):
+                    self._root.array(key, self._data[key], overwrite=True)
+                    self._data[key] = self._root[key]
+            for key in self._root.keys():
+                if key not in self.keys():
                     del self._root[key]
-        self._modified_keys = set()
 
     def to_memory(self, shard=(0, 1), keys=None):
         if keys is None:
@@ -117,12 +113,14 @@ class DataGroup:
         self._data = {k: to_array(self._data[k])[shard[0]::shard[1]] for k in keys}
 
     def to_root(self, root: zarr.hierarchy.Group):
-        for key in root.keys():
-            del root[key]
         for key, value in self.items():
-            root.array(key, value)
+            root.array(key, to_array(value), overwrite=True)
             self._data[key] = root[key]
         self._root = root
+
+        for key in self._root.keys():
+            if key not in self.keys():
+                del self._root[key]
 
     def merge(self, other, strict=True):
         self.assert_strictness()
@@ -141,7 +139,7 @@ class DataGroup:
                                                 to_array(other._data[k])],
                                                axis=0)
             else:
-                self._data[k].append(to_array(other))
+                self._data[k].append(to_array(other._data[k]))
 
         if self.mask is not None:
             if other.mask is None:
@@ -225,7 +223,6 @@ if __name__ == "__main__":
 
     print(zarr_group["forces"].shape)
     print(zarr_group._root, zarr_group.cow)
-    zarr_group._data
     zarr_group.merge(another_zarr_group, strict=False)
 
     #
