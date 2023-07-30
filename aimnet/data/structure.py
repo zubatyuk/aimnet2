@@ -1,5 +1,6 @@
 from typing import Union, Optional, Dict, Any, Iterable, Tuple
 
+import h5py
 import numpy as np
 import zarr
 from numpy import ndarray
@@ -28,17 +29,12 @@ class DataGroup:
         self.assert_strictness()
         self.cow = cow
 
-        if isinstance(data, str):
-            zarr.open_group()
-
     def load_data(self, data) -> Dict[str, Any]:
         if isinstance(data, str) or isinstance(data, zarr.storage.Store):
             data = zarr.open_group(data)
-
         if isinstance(data, zarr.hierarchy.Group):
             self._root = data
             data = {k: data[k] for k in data.array_keys()}
-
         return data
 
     def assert_strictness(self):
@@ -76,11 +72,19 @@ class DataGroup:
             self._data[key] = self._root.array(key, to_array(value),
                                                overwrite=True)
 
-    def __getitem__(self, item: Union[str, int, slice, ndarray]) -> Union[Any, Dict[str, ndarray]]:
+    def __getitem__(self, item: Union[str, int, slice, ndarray, Tuple[str, ndarray]]) -> Union[
+        Any, Dict[str, ndarray]]:
         if isinstance(item, str):
             val = self._data[item]
             if self.mask is not None:
                 val = to_array(val)[self.mask]
+
+        elif isinstance(item, Tuple):
+            val = self._data[item[0]]
+            if self.mask is not None:
+                val = to_array(val)[self.mask][item[1]]
+            else:
+                val = to_array(val)[item[1]]
 
         else:
             if self.mask is not None:
@@ -112,9 +116,11 @@ class DataGroup:
         self._root = None
         self._data = {k: to_array(self._data[k])[shard[0]::shard[1]] for k in keys}
 
-    def to_root(self, root: zarr.hierarchy.Group):
+    def to_root(self, root: zarr.hierarchy.Group, items=None):
+        if items is None:
+            items = slice(0, len(self))
         for key, value in self.items():
-            root.array(key, to_array(value), overwrite=True)
+            root.array(key, to_array(value)[items], overwrite=True)
             self._data[key] = root[key]
         self._root = root
 
@@ -157,10 +163,99 @@ class DataGroup:
             else:
                 self._root.array(k, val, overwrite=True)
                 self._data[k] = self._root[k]
+        self.mask = None
 
     def set_mask(self, mask):
         self.mask = mask
         self.assert_strictness()
+
+    @classmethod
+    def read_from_h5(cls, file: Union[str, h5py.File, h5py.Group], root=None, keys=None,
+            **kwargs):
+        if isinstance(file, str):
+            f = h5py.File(file, 'r')
+        else:
+            f = file
+
+        if keys is None:
+            keys = f.keys()
+        if root is not None:
+            data = root
+        else:
+            data = {}
+        instance = cls(data, **kwargs)
+
+        for k in keys:
+            instance[k] = np.array(f[k])
+
+        if isinstance(file, str):
+            f.close()
+        return instance
+
+    def save_h5(self, file: Union[str, h5py.File, h5py.Group], keys=None):
+        if isinstance(file, str):
+            f = h5py.File(file, 'w')
+        else:
+            f = file
+        if keys is None:
+            keys = self.keys()
+        for k in keys:
+            f.create_dataset(k, data=to_array(self[k]))
+        if isinstance(file, str):
+            f.close()
+
+    def random_split(self, *fractions, seed=None):
+        assert 0 < sum(fractions) <= 1
+        assert all(f > 0 for f in fractions)
+        idx = np.arange(len(self))
+        np.random.seed(seed)
+        np.random.shuffle(idx)
+        sections = np.around(np.cumsum(fractions) * len(self)).astype(int)
+        if sum(fractions) == 1:
+            sections = sections[:-1]
+        return np.array_split(idx, sections)
+
+    def get_split(self, split, keys=None, root=None, **group_kwargs):
+        if keys is None:
+            keys = self.keys()
+        if isinstance(split, list):
+
+            groups = []
+
+            for i, splt in enumerate(split):
+                if isinstance(root, zarr.hierarchy.Group):
+                    r = root.create_group(str(i))
+                elif isinstance(root, list):
+                    r = root[i]
+                else:
+                    r = None
+                groups.append(self.get_split(splt, keys=keys, root=r, **group_kwargs))
+            return groups
+
+        elif isinstance(split, ndarray):
+            if root is not None:
+                data = root
+            else:
+                data = {}
+            datagroup = self.__class__(data, **group_kwargs)
+
+            for k in keys:
+                datagroup[k] = self[(k, split)]
+            return datagroup
+
+        else:
+            raise NotImplementedError
+
+    def apply_peratom_shift(self, sap_dict, key_in='energy', key_out='energy',
+            numbers_key='numbers'):
+        ntyp = max(sap_dict.keys()) + 1
+        sap = np.zeros(ntyp) * np.nan
+        for k, v in sap_dict.items():
+            sap[k] = v
+
+        val = to_array(self._data[key_in]) - \
+              sap[to_array(self._data[numbers_key])].sum(axis=-1)
+        self[key_out] = val
 
 
 class SGDataset:
@@ -186,6 +281,8 @@ class SGDataset:
 
 
 if __name__ == "__main__":
+    import h5py
+
     root = zarr.group()
 
     group = root.create_group("group_1")
@@ -224,6 +321,28 @@ if __name__ == "__main__":
     print(zarr_group["forces"].shape)
     print(zarr_group._root, zarr_group.cow)
     zarr_group.merge(another_zarr_group, strict=False)
+
+    another_zarr_group.save_h5("toy.h5")
+    group = root.create_group("loaded_from_h5")
+
+    loaded_group = DataGroup.read_from_h5("toy.h5", root=group, cow=False)
+
+    print(loaded_group._root.tree())
+
+    dataset = h5py.File("test.h5")
+
+    print(dataset["027"])
+
+    group = root.create_group("test_dataset")
+    datagroup = DataGroup.read_from_h5(dataset["027"], root=group, cow=False)
+
+    splits = datagroup.random_split(0.9, 0.1)
+    group = root.create_group("test")
+    group = root.create_group("train")
+    datasets = datagroup.get_split(splits, root=[root["train"], root["test"]], cow=False)
+    print(datasets[0]._root.tree())
+
+    datasets = datagroup.get_split(splits, root=None)
 
     #
     # zarr_group.cat(another_zarr_group)
