@@ -1,4 +1,4 @@
-from typing import Union, Dict, Any, Tuple, Sequence
+from typing import Union, Dict, Any, Tuple, Sequence, Optional
 
 import h5py
 import numpy as np
@@ -253,8 +253,7 @@ class DataGroup:
         np.random.seed(seed)
         np.random.shuffle(idx)
         sections = np.around(np.cumsum(fractions) * len(self)).astype(int)
-        if sum(fractions) == 1:
-            sections = sections[:-1]
+        sections = sections[:-1]
 
         if keys is None:
             keys = self.keys()
@@ -368,11 +367,11 @@ class SizeGroupedDataset:
                 subgroup = group.create_group(f"{k:03d}")
                 self[k].to_h5(subgroup, keys=keys)
 
-    def to_root(self, group: zarr.hierarchy.Group):
-        clean_group(group)
+    def to_root(self, root: zarr.hierarchy.Group):
+        clean_group(root)
 
         for k in self.keys():
-            subgroup = group.create_group(f"{k:03d}")
+            subgroup = root.create_group(f"{k:03d}")
             self[k].to_root(subgroup)
         self._root = root
 
