@@ -3,6 +3,7 @@ from typing import Union, Dict, Any, Tuple, Sequence
 import h5py
 import numpy as np
 import zarr
+from numpy import ndarray
 from torch.utils.data.dataloader import DataLoader, default_collate
 
 
