@@ -46,6 +46,17 @@ def test_basic_functionality():
 
     clean_group(root)
 
+    from_h5_dataset = SizeGroupedDataset("test.h5")
+    assert length == len(from_h5_dataset)
+    from_h5_dataset.to_root(root)
+
+    from_zarr_dataset = SizeGroupedDataset("test_zarr")
+    assert length == len(from_zarr_dataset)
+
+    from_zarr_dataset = SizeGroupedDataset("test_zarr", to_memory=True)
+    assert from_zarr_dataset._root is None
+
+
 
 def test_split_functionality():
     root = zarr.group("test_zarr")

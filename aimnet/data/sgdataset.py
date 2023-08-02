@@ -1,7 +1,8 @@
-from typing import Union, Dict, Any, Tuple, Sequence, Optional
+from typing import Union, Dict, Any, Tuple, Sequence, Optional, Iterable
 
 import h5py
 import numpy as np
+import os
 import zarr
 from numpy import ndarray
 from torch.utils.data.dataloader import DataLoader, default_collate
@@ -304,7 +305,10 @@ class SizeGroupedDataset:
 
             strict: bool = True,
             shard: Tuple[int, int] = (0, 1),
-            cow: bool = True):
+            to_memory: bool = False,
+            cow: bool = True,
+            keys: Iterable = None):
+
 
         self._root = None
         self.shard = shard
@@ -312,14 +316,23 @@ class SizeGroupedDataset:
         self.strict = strict
         self._data = dict()
         self._meta = dict()
-        self.load_data(data)
+        self.load_data(data, keys=keys)
         self.loader_mode = False
         self.x = {}
         self.y = {}
 
+        if to_memory or self._root is None:
+            self.to_memory(shard=shard)
+
     def load_data(self, data, keys=None):
-        if data is None:
+        if isinstance(data, str) and os.path.isdir(data):
+            data = zarr.open_group(data)
+
+        elif isinstance(data, str):
+            return self.load_h5(data, keys=keys)
+        elif data is None:
             data = {}
+
         if isinstance(data, zarr.hierarchy.Group) or isinstance(data, dict):
             for k in data.keys():
                 self[int(k)] = DataGroup(data[k], cow=self.cow, strict=self.strict, keys=keys)
@@ -328,6 +341,13 @@ class SizeGroupedDataset:
 
         if isinstance(data, zarr.hierarchy.Group):
             self._root = data
+
+    def load_h5(self, data, keys=None):
+        with h5py.File(data, 'r') as f:
+            for k, g in f.items():
+                k = int(k)
+                self[k] = DataGroup.from_h5(g, keys=keys, cow=self.cow, strict=self.strict)
+            self._meta = dict(f.attrs)
 
     @classmethod
     def from_h5(cls, data: Union[str, h5py.File, h5py.Group], root: zarr.hierarchy.Group = None,
