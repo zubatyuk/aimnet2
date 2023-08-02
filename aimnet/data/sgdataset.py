@@ -53,6 +53,9 @@ class DataGroup:
     def load_data(self, data, keys) -> Dict[str, Any]:
         if isinstance(data, str) or isinstance(data, zarr.storage.Store):
             data = zarr.open_group(data)
+        if data is None:
+            data = {}
+
         if keys is None:
             keys = data.keys()
         if isinstance(data, zarr.hierarchy.Group):
@@ -253,13 +256,12 @@ class DataGroup:
         np.random.seed(seed)
         np.random.shuffle(idx)
         sections = np.around(np.cumsum(fractions) * len(self)).astype(int)
-        sections = sections[:-1]
 
         if keys is None:
             keys = self.keys()
 
         groups = []
-        for i, sidx in enumerate(np.array_split(idx, sections)):
+        for i, sidx in enumerate(np.array_split(idx, sections)[:-1]):
             if isinstance(root, zarr.hierarchy.Group):
                 data = root.create_group(f"{i:03d}")
             elif isinstance(root, list):
@@ -316,6 +318,8 @@ class SizeGroupedDataset:
         self.y = {}
 
     def load_data(self, data, keys=None):
+        if data is None:
+            data = {}
         if isinstance(data, zarr.hierarchy.Group) or isinstance(data, dict):
             for k in data.keys():
                 self[int(k)] = DataGroup(data[k], cow=self.cow, strict=self.strict, keys=keys)
@@ -359,7 +363,7 @@ class SizeGroupedDataset:
 
         if isinstance(group, str):
             with h5py.File(group, "w") as f:
-                return self.to_h5(f, root, keys=keys)
+                return self.to_h5(f, group, keys=keys)
 
         elif isinstance(group, h5py.File) or isinstance(group, h5py.Group):
             clean_group(group)

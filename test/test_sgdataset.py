@@ -1,12 +1,12 @@
-import zarr
-import time
 import numpy as np
+import zarr
 
 from aimnet.data import SizeGroupedDataset
 from aimnet.data.sgdataset import clean_group
 
 
 def test_basic_functionality():
+    dataset = SizeGroupedDataset()
     root = zarr.group("test_zarr")
     clean_group(root)
     r1 = root.create_group("dataset_1")
@@ -36,7 +36,7 @@ def test_basic_functionality():
     assert "energiya" not in dataset.datakeys()
 
     print(len(dataset))
-    assert len(dataset) == 2*length
+    assert len(dataset) == 2 * length
 
     key = next(iter(keys))
     assert len(dataset._root[f"{key:03d}/numbers"]) != len(dataset[key])
@@ -60,7 +60,7 @@ def test_split_functionality():
 
     inmem_test, inmem_valid = dataset.random_split(0.1, 0.1)
 
-    assert abs(len(inmem_test)/len(dataset) - 0.1) < 0.05
+    assert abs(len(inmem_test) / len(dataset) - 0.1) < 0.05
     assert abs(len(inmem_train) / len(dataset) - 0.9) < 0.05
 
     ondisk_train, ondisk_test = dataset.random_split(0.1, 0.9, root=[test_group, train_group])
@@ -74,19 +74,11 @@ def test_split_functionality():
     assert np.mean(np.abs(inmem_test_copy[key]["energy"] - inmem_test[key]["energy"])) < 1e-6
     assert np.mean(np.abs(inmem_test_diff[key]["energy"] - inmem_test[key]["energy"])) > 1e-3
 
+    inmem_test, = dataset.random_split(0.1, )
+
+    assert abs(len(inmem_test) / len(dataset) - 0.1) < 0.05
+
 
 def test_loaders():
-    #todo: add loader tests
+    # todo: add loader tests
     pass
-
-
-
-
-
-
-
-
-
-
-
-
