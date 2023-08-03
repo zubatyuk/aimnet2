@@ -30,7 +30,21 @@ def clean_group(root: Union[zarr.hierarchy.Group, h5py.Group, None]):
         [clean_group(i) for i in root]
     elif root is not None:
         for k in root.keys():
-            del root[k]
+            try:
+                del root[k]
+            except Exception:
+                pass
+
+
+def _squeeze(t):
+    for d in t:
+        for v in d.values():
+            v.squeeze_(0)
+    return t
+
+
+def collate_fn(x):
+    return _squeeze(default_collate(x))
 
 
 class DataGroup:
@@ -668,20 +682,13 @@ class SizeGroupedDataset:
         self.loader_mode = True
         self.x = x
         self.y = y or {}
-
         sampler = SizeGrouppedSampler(
             group_sizes, batch_sizes=batch_sizes, shuffle=shuffle, rank=rank, world_size=world_size,
             seed=seed)
         loader = DataLoader(self, batch_sampler=sampler,
                             num_workers=num_workers, pin_memory=pin_memory)
 
-        def _squeeze(t):
-            for d in t:
-                for v in d.values():
-                    v.squeeze_(0)
-            return t
-
-        loader.collate_fn = lambda x: _squeeze(default_collate(x))
+        loader.collate_fn = collate_fn
         return loader
 
     def weighted_loader(self, x, y=None, batch_size=32, num_batches=None, num_workers=0,
@@ -699,13 +706,7 @@ class SizeGroupedDataset:
         loader = DataLoader(self, batch_sampler=sampler,
                             num_workers=num_workers, pin_memory=pin_memory)
 
-        def _squeeze(t):
-            for d in t:
-                for v in d.values():
-                    v.squeeze_(0)
-            return t
-
-        loader.collate_fn = lambda x: _squeeze(default_collate(x))
+        loader.collate_fn = collate_fn
         return loader
 
 
