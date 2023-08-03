@@ -1,8 +1,9 @@
+import os
+from glob import glob
 from typing import Union, Dict, Any, Tuple, Sequence, Optional, Iterable
 
 import h5py
 import numpy as np
-import os
 import zarr
 from numpy import ndarray
 from torch.utils.data.dataloader import DataLoader, default_collate
@@ -309,9 +310,7 @@ class SizeGroupedDataset:
             cow: bool = True,
             keys: Iterable = None):
 
-
         self._root = None
-        self.shard = shard
         self.cow = cow
         self.strict = strict
         self._data = dict()
@@ -350,6 +349,29 @@ class SizeGroupedDataset:
             self._meta = dict(f.attrs)
 
     @classmethod
+    def from_datadir(cls, path, keys=None):
+        if not os.path.isdir(path):
+            raise FileNotFoundError(
+                f'{path} does not exist or not a directory.')
+        instance = cls()
+        for f in glob(os.path.join(path, '???.npz')):
+            k = int(os.path.basename(f)[:3])
+            data = np.load(f)
+            instance[k] = DataGroup(data, keys=keys)
+        return instance
+
+    @classmethod
+    def from_files(cls, files, keys=None):
+        ins = cls()
+        for fil in files:
+            if not os.path.isfile(fil):
+                raise FileNotFoundError(f'{fil} does not exist or not a file.')
+            k = int(os.path.splitext(os.path.basename(fil))[0])
+            data = np.load(fil)
+            ins[k] = DataGroup(data, keys=keys)
+        return ins
+
+    @classmethod
     def from_h5(cls, data: Union[str, h5py.File, h5py.Group], root: zarr.hierarchy.Group = None,
             **dataset_kwargs):
 
@@ -383,7 +405,7 @@ class SizeGroupedDataset:
 
         if isinstance(group, str):
             with h5py.File(group, "w") as f:
-                return self.to_h5(f, group, keys=keys)
+                return self.to_h5(f, keys=keys)
 
         elif isinstance(group, h5py.File) or isinstance(group, h5py.Group):
             clean_group(group)
@@ -404,32 +426,34 @@ class SizeGroupedDataset:
         for key in self.keys():
             self[key].to_memory(shard, keys=keys)
 
-    # @classmethod
-    # def load_datadir(cls, path, keys=None):
-    #     if not os.path.isdir(path):
-    #         raise FileNotFoundError(
-    #             f'{path} does not exist or not a directory.')
-    #     for f in glob(os.path.join(path, '???.npz')):
-    #         k = int(os.path.basename(f)[:3])
-    #         self[k] = DataGroup(f, keys=keys)
-    #
-    # def load_files(self, files, keys=None):
-    #     for fil in files:
-    #         if not os.path.isfile(fil):
-    #             raise FileNotFoundError(f'{fil} does not exist or not a file.')
-    #         k = int(os.path.splitext(os.path.basename(fil))[0])
-    #         self[k] = DataGroup(fil, keys=keys)
-    #
-    # def load_dict(self, data, keys=None):
-    #     for k, v in data.items():
-    #         self[k] = DataGroup(v, keys=keys)
-    #
-    # def load_h5(self, data, keys=None):
-    #     with h5py.File(data, 'r') as f:
-    #         for k, g in f.items():
-    #             k = int(k)
-    #             self[k] = DataGroup(g, keys=keys)
-    #         self._meta = dict(f.attrs)
+    def save(self, store, overwrite=False):
+        if isinstance(store, str) or isinstance(store, zarr.storage.Store):
+            store = zarr.group(store=store, overwrite=overwrite)
+
+        if isinstance(store, zarr.hierarchy.Group):
+            if overwrite:
+                clean_group(store)
+            else:
+                assert len(store) == 0, "The provided storage is not empty"
+            self.to_root(store)
+        else:
+            raise NotImplementedError
+
+    def save_npz(self, dirname, namemap_fn=None, compress=False):
+        os.makedirs(dirname, exist_ok=True)
+        if namemap_fn is None:
+            def namemap_fn(x): return f'{x:03d}.npz'
+        for k, v in self.items():
+            fname = os.path.join(dirname, namemap_fn(k))
+            if compress:
+                op = np.savez_compressed
+            else:
+                op = np.savez
+            if len(v):
+                op(fname, **{key: val for key, val in v.items()})
+
+    def save_h5(self, filename):
+        return self.to_h5(filename)
 
     def keys(self):
         return sorted(self._data.keys())
