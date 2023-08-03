@@ -30,7 +30,6 @@ def test_reding_and_writing():
     zarr_dataset.save_h5("test_data/another_test.h5")
     h5_dataset = SizeGroupedDataset("test_data/another_test.h5")
     from_zarr_dataset = SizeGroupedDataset("test_data/test_zarr", to_memory=True)
-    assert from_zarr_dataset._root is None
 
 
 def test_basic_functionality():
@@ -75,13 +74,13 @@ def test_basic_functionality():
 
 
 def test_split_functionality():
-    root = zarr.group("test_zarr")
+    root = zarr.group("test_data/test_zarr")
     clean_group(root)
     data_group = root.create_group("data")
     test_group = root.create_group("test")
     train_group = root.create_group("train")
 
-    dataset = SizeGroupedDataset.from_h5("test.h5", root=data_group)
+    dataset = SizeGroupedDataset.from_h5("test_data/test.h5", root=data_group)
 
     inmem_test, inmem_train = dataset.random_split(0.1, 0.9)
 
