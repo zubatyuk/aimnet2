@@ -1,18 +1,45 @@
 import numpy as np
 import zarr
+import time
 
 from aimnet.data import SizeGroupedDataset
 from aimnet.data.sgdataset import clean_group
 
 
-def test_basic_functionality():
+def test_reding_and_writing():
     dataset = SizeGroupedDataset()
-    root = zarr.group("test_zarr")
+
+    in_mem = SizeGroupedDataset.from_h5("test_data/test.h5")
+    in_mem.save("test_data/test_zarr", overwrite=True)
+
+    zarr_dataset = SizeGroupedDataset("test_data/test_zarr")
+
+    try:
+        zarr_dataset.save("test_data/test_zarr")
+        exit()
+    except AssertionError:
+        pass
+
+    zarr_dataset.save_npz("test_data/npz")
+    dataset = SizeGroupedDataset.from_datadir("test_data/npz")
+
+    assert len(zarr_dataset) == len(dataset)
+    from_h5_dataset = SizeGroupedDataset("test_data/test.h5")
+    assert len(zarr_dataset) == len(from_h5_dataset)
+
+    zarr_dataset.save_h5("test_data/another_test.h5")
+    h5_dataset = SizeGroupedDataset("test_data/another_test.h5")
+    from_zarr_dataset = SizeGroupedDataset("test_data/test_zarr", to_memory=True)
+    assert from_zarr_dataset._root is None
+
+
+def test_basic_functionality():
+    root = zarr.group("test_data/test_zarr")
     clean_group(root)
     r1 = root.create_group("dataset_1")
     r2 = root.create_group("dataset_2")
 
-    dataset = SizeGroupedDataset.from_h5("test.h5", root=r1)
+    dataset = SizeGroupedDataset.from_h5("test_data/test.h5", root=r1)
     dataset.to_root(r2)
 
     assert dataset._root == r2
@@ -45,17 +72,6 @@ def test_basic_functionality():
     assert len(dataset._root[f"{key:03d}/numbers"]) == len(dataset[key])
 
     clean_group(root)
-
-    from_h5_dataset = SizeGroupedDataset("test.h5")
-    assert length == len(from_h5_dataset)
-    from_h5_dataset.to_root(root)
-
-    from_zarr_dataset = SizeGroupedDataset("test_zarr")
-    assert length == len(from_zarr_dataset)
-
-    from_zarr_dataset = SizeGroupedDataset("test_zarr", to_memory=True)
-    assert from_zarr_dataset._root is None
-
 
 
 def test_split_functionality():
@@ -91,5 +107,23 @@ def test_split_functionality():
 
 
 def test_loaders():
-    # todo: add loader tests
-    pass
+    dataset = SizeGroupedDataset.from_h5("test_data/test.h5")
+    dataset.to_root(zarr.group())
+
+    dataloader = dataset.get_loader(x=["coordinates", "numbers"], y=["energy"])
+
+    n_batches = len(dataloader)
+    curr_time = time.time()
+
+    for _ in dataloader:
+        pass
+    on_disk_rate = n_batches / (time.time() - curr_time)
+
+    dataset.to_memory()
+    curr_time = time.time()
+
+    for _ in dataloader:
+        pass
+    in_mem_rate = n_batches / (time.time() - curr_time)
+
+    assert in_mem_rate / 20 > on_disk_rate
