@@ -153,23 +153,39 @@ class DataGroup:
         if not (self.cow or self._root is None):
             del self._root[key]
 
-    def flush(self):
+    def flush(self, keys=None):
         if self._root is not None:
-            for key in self.keys():
+            changed_keys = set(self.keys())
+            deleted_keys = set(self._root.keys()) - changed_keys
+            if keys is not None:
+                changed_keys = changed_keys & set(keys)
+                deleted_keys = deleted_keys & set(keys)
+
+            for key in changed_keys:
                 if isinstance(self._data[key], ndarray):
                     self._root.array(key, self._data[key], overwrite=True)
                     self._data[key] = self._root[key]
-            for key in self._root.keys():
-                if key not in self.keys():
-                    del self._root[key]
 
-    def to_memory(self, shard=(0, 1), keys=None):
+            for key in deleted_keys:
+                del self._root[key]
+
+    def to_memory(self, keys=None):
         if keys is None:
             keys = self.keys()
         else:
             assert set(keys) == set(keys) & set(self.keys())
-        self._root = None
-        self._data = {k: to_array(self._data[k])[shard[0]::shard[1]] for k in keys}
+
+        for k in keys:
+            self._data[k] = to_array(self._data[k])
+
+    def get_shard(self, idx=0, size=1, keys=None):
+        if keys is None:
+            keys = self.keys()
+        else:
+            assert set(keys) == set(keys) & set(self.keys())
+
+        data = {k: to_array(self._data[k], copy=True)[idx::size] for k in keys}
+        return self.__class__(data)
 
     def to_root(self, root: zarr.hierarchy.Group, items=None):
         clean_group(root)
@@ -335,7 +351,7 @@ class SizeGroupedDataset:
         self.y = {}
 
         if to_memory or self._root is None:
-            self.to_memory(shard=shard)
+            self.to_memory(keys=keys)
 
     def load_data(self, data, keys=None):
         if isinstance(data, str) and os.path.isdir(data):
@@ -435,10 +451,16 @@ class SizeGroupedDataset:
             self[k].to_root(subgroup)
         self._root = root
 
-    def to_memory(self, shard=(0, 1), keys=None):
-        self._root = None
+    def to_memory(self, keys=None):
         for key in self.keys():
-            self[key].to_memory(shard, keys=keys)
+            self[key].to_memory(keys=keys)
+
+    def get_shard(self, idx, size, keys=None):
+        ins = self.__class__()
+
+        for key in self.keys():
+            ins[key] = self[key].get_shard(idx, size, keys=keys)
+        return ins
 
     def save(self, store, overwrite=False):
         if isinstance(store, str) or isinstance(store, zarr.storage.Store):
