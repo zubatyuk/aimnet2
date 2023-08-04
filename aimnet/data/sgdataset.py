@@ -1,4 +1,5 @@
 import os
+from collections import defaultdict
 from glob import glob
 from typing import Union, Dict, Any, Tuple, Sequence, Optional, Iterable
 
@@ -20,7 +21,7 @@ def to_array(value, copy=False):
         if copy:
             value = value.copy()
     else:
-        raise f"Invalid data typy {type(value)}"
+        raise ValueError(f"Invalid data type {type(value)}")
 
     return value
 
@@ -378,6 +379,47 @@ class SizeGroupedDataset:
                 self[k] = DataGroup.from_h5(g, keys=keys, cow=self.cow, strict=self.strict)
             self._meta = dict(f.attrs)
 
+    def extend_from_iterable(self, data: Iterable,
+            size_fn=lambda x: len(x['numbers']),
+            transform_fn=None, buffer_size=64 * 1024):
+        ds = defaultdict(lambda: defaultdict(list))
+
+        buffer = 0
+        for i, d in enumerate(data):
+            if transform_fn is not None:
+                d = transform_fn(d)
+            n = size_fn(d)
+            for k, v in d.items():
+                ds[n][k].append(v)
+            buffer += 1
+
+            if buffer == buffer_size or i == len(data) - 1:
+                def aplly_nested_dict(d, fn):
+                    for k, v in d.items():
+                        if isinstance(v, dict):
+                            d[k] = aplly_nested_dict(v, fn)
+                        else:
+                            d[k] = fn(v)
+                    return d
+
+                ds = aplly_nested_dict(ds, np.stack)
+                if len(self) == 0:
+                    self.load_data(ds)
+                else:
+                    self.merge(ds)
+                buffer = 0
+                ds = defaultdict(lambda: defaultdict(list))
+
+    @classmethod
+    def from_iterable(cls, data: Iterable,
+            root: zarr.Group = None,
+            size_fn=lambda x: len(x['numbers']),
+            transform_fn=None, buffer_size=64 * 1024,
+            **kwargs):
+        instance = cls(root, **kwargs)
+        instance.extend_from_iterable(data, size_fn, transform_fn, buffer_size)
+        return instance
+
     @classmethod
     def from_datadir(cls, path, keys=None):
         if not os.path.isdir(path):
@@ -545,10 +587,10 @@ class SizeGroupedDataset:
         for grp in self.groups:
             fn(grp)
 
-    def flush(self):
+    def flush(self, keys=None):
         if self._root is not None:
             for g in self.values():
-                g.flush()
+                g.flush(keys=keys)
             for key in self._root.keys():
                 if int(key) not in self.keys():
                     del self._root[key]
