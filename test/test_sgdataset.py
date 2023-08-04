@@ -1,6 +1,7 @@
+import time
+
 import numpy as np
 import zarr
-import time
 
 from aimnet.data import SizeGroupedDataset
 from aimnet.data.sgdataset import clean_group
@@ -8,6 +9,8 @@ from aimnet.data.sgdataset import clean_group
 
 def test_reding_and_writing():
     dataset = SizeGroupedDataset()
+
+    assert len(dataset) == 0
 
     in_mem = SizeGroupedDataset.from_h5("test_data/test.h5")
     in_mem.save("test_data/test_zarr", overwrite=True)
@@ -31,6 +34,19 @@ def test_reding_and_writing():
     h5_dataset = SizeGroupedDataset("test_data/another_test.h5")
     from_zarr_dataset = SizeGroupedDataset("test_data/test_zarr", to_memory=True)
 
+    item = from_zarr_dataset[from_zarr_dataset.keys()[0], 0]
+
+    iterable = [item] * 10000
+
+    ds = SizeGroupedDataset.from_iterable(iterable, zarr.group(), buffer_size=1000)
+
+    assert len(ds) == 10000
+
+    l = len(dataset)
+    dataset.extend_from_iterable(iterable)
+
+    assert len(dataset) == l + 10000
+
 
 def test_basic_functionality():
     root = zarr.group("test_data/test_zarr")
@@ -40,6 +56,13 @@ def test_basic_functionality():
 
     dataset = SizeGroupedDataset.from_h5("test_data/test.h5", root=r1)
     dataset.to_root(r2)
+
+    dataset.apply_peratom_shift("energy", "changed_energy")
+    dataset.apply_peratom_shift("energy", "another_changed_energy")
+    dataset.flush(keys=["changed_energy"])
+
+    assert isinstance(dataset[dataset.keys()[0]]["changed_energy"], zarr.Array)
+    assert isinstance(dataset[dataset.keys()[0]]["another_changed_energy"], np.ndarray)
 
     assert dataset._root == r2
 
@@ -69,6 +92,10 @@ def test_basic_functionality():
     dataset.flush()
 
     assert len(dataset._root[f"{key:03d}/numbers"]) == len(dataset[key])
+
+    shard = dataset.get_shard(0, 2)
+
+    assert abs(len(shard) * 2 - len(dataset)) <= 1
 
     clean_group(root)
 

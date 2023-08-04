@@ -336,7 +336,6 @@ class SizeGroupedDataset:
                         zarr.hierarchy.Group] = None,  # join groups as it is
 
             strict: bool = True,
-            shard: Tuple[int, int] = (0, 1),
             to_memory: bool = False,
             cow: bool = True,
             keys: Iterable = None):
@@ -358,7 +357,7 @@ class SizeGroupedDataset:
         if isinstance(data, str) and os.path.isdir(data):
             data = zarr.open_group(data)
 
-        elif isinstance(data, str):
+        elif isinstance(data, str) and data.endswith('.h5'):
             return self.load_h5(data, keys=keys)
         elif data is None:
             data = {}
@@ -367,7 +366,7 @@ class SizeGroupedDataset:
             for k in data.keys():
                 self[int(k)] = DataGroup(data[k], cow=self.cow, strict=self.strict, keys=keys)
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Data type {type(data)} is not supported.")
 
         if isinstance(data, zarr.hierarchy.Group):
             self._root = data
@@ -429,7 +428,9 @@ class SizeGroupedDataset:
         for f in glob(os.path.join(path, '???.npz')):
             k = int(os.path.basename(f)[:3])
             data = np.load(f)
-            instance[k] = DataGroup(data, keys=keys)
+            dct = dict(data)
+            data.close()
+            instance[k] = DataGroup(dct, keys=keys)
         return instance
 
     @classmethod
