@@ -47,6 +47,29 @@ def test_reding_and_writing():
 
     assert len(dataset) == l + 10000
 
+    empty_dataset = SizeGroupedDataset("./")
+
+    empty_dataset.merge(zarr_dataset, strict=False)
+
+    ln = len(empty_dataset)
+
+    empty_dataset.merge(zarr_dataset)
+
+    assert ln == len(empty_dataset) // 2
+
+    zarr_dataset.rename_datakey("numbers", "n")
+    del zarr_dataset._data[27]
+
+    empty_dataset.merge(zarr_dataset, strict=False)
+
+    try:
+        empty_dataset.merge(zarr_dataset)
+        exit()
+    except AssertionError:
+        pass
+
+
+
 
 def test_basic_functionality():
     root = zarr.group("test_data/test_zarr")
