@@ -65,21 +65,19 @@ class DataGroup:
                         zarr.hierarchy.Group,
                         zarr.storage.Store],
             cow: bool = True,
-            mask: Optional[ndarray] = None,
             strict: bool = True,
             keys=None,
             **kwargs
     ):
         self._root = None
         self.strict = strict
-        self.mask = mask
         self._data = self.load_data(data, keys)
         self.assert_strictness()
         self.cow = cow
 
     def load_data(self, data, keys) -> Dict[str, Any]:
         if isinstance(data, str) or isinstance(data, zarr.storage.Store):
-            data = zarr.open_group(data)
+            data = zarr.convenience.open(data)
         if data is None:
             data = {}
 
@@ -97,15 +95,9 @@ class DataGroup:
                     n = len(self._data[key])
                 else:
                     assert n == len(self._data[key])
-            if n is not None and self.mask is not None:
-                assert n == len(self.mask)
 
     def __len__(self):
-        if self.mask is None:
-            length = len(self._data[next(iter(self._data.keys()))]) if len(self._data) else 0
-        else:
-            length = np.sum(self.mask)
-        return length
+        return len(self._data[next(iter(self._data.keys()))]) if len(self._data) else 0
 
     def __contains__(self, value):
         return value in self.keys()
@@ -141,21 +133,13 @@ class DataGroup:
         Any, Dict[str, ndarray]]:
         if isinstance(item, str):
             val = self._data[item]
-            if self.mask is not None:
-                val = to_array(val)[self.mask]
 
         elif isinstance(item, Tuple):
             val = self._data[item[0]]
-            if self.mask is not None:
-                val = to_array(val)[self.mask][item[1]]
-            else:
-                val = to_array(val)[item[1]]
+            val = to_array(val)[item[1]]
 
         else:
-            if self.mask is not None:
-                val = {k: to_array(v)[self.mask][item] for k, v in self.items()}
-            else:
-                val = {k: to_array(v)[item] for k, v in self.items()}
+            val = {k: to_array(v)[item] for k, v in self.items()}
         return val
 
     def __delitem__(self, key):
@@ -165,6 +149,8 @@ class DataGroup:
 
     def flush(self, keys=None):
         if self._root is not None:
+            cow = self.cow
+            self.cow = False
             changed_keys = set(self.keys())
             deleted_keys = set(self._root.keys()) - changed_keys
             if keys is not None:
@@ -172,18 +158,17 @@ class DataGroup:
                 deleted_keys = deleted_keys & set(keys)
 
             for key in changed_keys:
-                if isinstance(self._data[key], ndarray):
-                    self._root.array(key, self._data[key], overwrite=True)
-                    self._data[key] = self._root[key]
+                self[key] = self[key]
 
             for key in deleted_keys:
                 del self._root[key]
+            self.cow = cow
 
     def to_memory(self, keys=None):
         keys = _get_keys(self.keys(), keys)
-
+        self._root = None
         for k in keys:
-            self._data[k] = to_array(self._data[k])
+            self[k] = self[k]
 
     def get_shard(self, idx=0, size=1, keys=None):
         keys = _get_keys(self.keys(), keys)
@@ -192,13 +177,15 @@ class DataGroup:
 
     def to_root(self, root: zarr.hierarchy.Group, items=None, keys=None):
         clean_group(root)
+        cow = self.cow
+        self._root = root
+        self.cow = False
         keys = _get_keys(self.keys(), keys)
         if items is None:
             items = slice(0, len(self))
         for key in keys:
-            root.array(key, to_array(self[key])[items], overwrite=True)
-            self._data[key] = root[key]
-        self._root = root
+            self[key] = to_array(self[key])[items]
+        self.cow = cow
 
     def merge(self, other, strict=True):
         if len(self) == 0:
@@ -224,27 +211,7 @@ class DataGroup:
                 else:
                     self._data[k].append(to_array(other._data[k]))
 
-            if self.mask is not None:
-                if other.mask is None:
-                    other_mask = np.ones(len(other), dtype=bool)
-                else:
-                    other_mask = other.mask
-                self.mask = np.concatenate([self.mask, other_mask])
             self.assert_strictness()
-
-    def apply_mask(self):
-        for k, v in self.items():
-            val = v[self.mask]
-            if self.cow or self._root is None or isinstance(self._data[k], ndarray):
-                self._data[k] = val
-            else:
-                self._root.array(k, val, overwrite=True)
-                self._data[k] = self._root[k]
-        self.mask = None
-
-    def set_mask(self, mask):
-        self.mask = mask
-        self.assert_strictness()
 
     @classmethod
     def from_h5(cls, group: h5py.Group, root=None, keys=None,
@@ -328,6 +295,27 @@ class DataGroup:
             yield dict((k, to_array(v)[idx]) for k, v in self.items() if k in keys)
 
 
+class Cow:
+    def __init__(self, dataset, cow=True):
+        self.dataset = dataset
+        self.cow = cow
+
+    def __enter__(self):
+        self.dataset.flush()
+        self.dataset_cow = self.dataset.cow
+        self.dataset.cow = self.cow
+
+        for group in self.dataset.values():
+            group.cow = self.cow
+
+    def __exit__(self, *args):
+        self.dataset.flush()
+        self.dataset.cow = self.dataset_cow
+
+        for group in self.dataset.values():
+            group.cow = self.dataset_cow
+
+
 class SizeGroupedDataset:
     def __init__(self,
             data: Union[str,
@@ -352,9 +340,15 @@ class SizeGroupedDataset:
         if to_memory or self._root is None:
             self.to_memory(keys=keys)
 
+    def assert_strictness(self):
+        keys = set(self.datakeys())
+
+        for g in self.values():
+            assert set(g.keys()) == keys
+
     def load_data(self, data, keys=None):
         if isinstance(data, str) and os.path.isdir(data):
-            data = zarr.open_group(data)
+            data = zarr.convenience.open(data)
 
         elif isinstance(data, str) and data.endswith('.h5'):
             return self.load_h5(data, keys=keys)
@@ -372,9 +366,10 @@ class SizeGroupedDataset:
 
     def load_h5(self, data, keys=None):
         with h5py.File(data, 'r') as f:
-            for k, g in f.items():
-                k = int(k)
-                self[k] = DataGroup.from_h5(g, keys=keys, cow=self.cow, strict=self.strict)
+            with Cow(self, False):
+                for k, g in f.items():
+                    k = int(k)
+                    self[k] = DataGroup.from_h5(g, keys=keys, cow=self.cow, strict=self.strict)
             self._meta = dict(f.attrs)
 
     def extend_from_iterable(self, data: Iterable,
@@ -426,34 +421,35 @@ class SizeGroupedDataset:
         return instance
 
     @classmethod
-    def from_datadir(cls, path, keys=None):
+    def from_datadir(cls, path, root=None, keys=None, **kwargs):
         if not os.path.isdir(path):
             raise FileNotFoundError(
                 f'{path} does not exist or not a directory.')
-        instance = cls()
-        for f in glob(os.path.join(path, '???.npz')):
-            k = int(os.path.basename(f)[:3])
-            data = np.load(f)
-            dct = dict(data)
-            data.close()
-            instance[k] = DataGroup(dct, keys=keys)
+        instance = cls(root, **kwargs)
+        with Cow(instance, False):
+            for f in glob(os.path.join(path, '???.npz')):
+                k = int(os.path.basename(f)[:3])
+                data = np.load(f)
+                dct = dict(data)
+                data.close()
+                instance[k] = DataGroup(dct, keys=keys)
         return instance
 
     @classmethod
-    def from_files(cls, files, keys=None):
-        ins = cls()
-        for fil in files:
-            if not os.path.isfile(fil):
-                raise FileNotFoundError(f'{fil} does not exist or not a file.')
-            k = int(os.path.splitext(os.path.basename(fil))[0])
-            data = np.load(fil)
-            ins[k] = DataGroup(data, keys=keys)
+    def from_files(cls, files, root=None, keys=None, **kwargs):
+        ins = cls(root, **kwargs)
+        with Cow(ins, False):
+            for fil in files:
+                if not os.path.isfile(fil):
+                    raise FileNotFoundError(f'{fil} does not exist or not a file.')
+                k = int(os.path.splitext(os.path.basename(fil))[0])
+                data = np.load(fil)
+                ins[k] = DataGroup(data, keys=keys, **kwargs)
         return ins
 
     @classmethod
     def from_h5(cls, data: Union[str, h5py.File, h5py.Group], root: zarr.hierarchy.Group = None,
             **dataset_kwargs):
-
         if isinstance(data, str):
             with h5py.File(data, "r") as f:
                 return cls.from_h5(f, root, **dataset_kwargs)
@@ -462,15 +458,10 @@ class SizeGroupedDataset:
             keys = dataset_kwargs.get("keys", None)
             _data = root
             instance = cls(_data, **dataset_kwargs)
-
-            for k in data.keys():
-                if root is not None:
-                    group_root = root.create_group(k, overwrite=True)
-                else:
-                    group_root = None
-                instance[int(k)] = DataGroup.from_h5(data[k], group_root, keys=keys,
-                                                     **dataset_kwargs)
-                instance[int(k)].flush()
+            with Cow(instance, False):
+                for k in data.keys():
+                    instance[int(k)] = DataGroup.from_h5(data[k], keys=keys,
+                                                         **dataset_kwargs)
             return instance
 
     def to_h5(self, group: Union[str, h5py.File, h5py.Group], keys=None):
@@ -486,12 +477,13 @@ class SizeGroupedDataset:
                 self[k].to_h5(subgroup, keys=keys)
 
     def to_root(self, root: zarr.hierarchy.Group, keys=None, items=None):
+        if isinstance(root, str) or isinstance(root, zarr.storage.Store):
+            root = zarr.convenience.open(store=root)
         clean_group(root)
-
-        for k in self.keys():
-            subgroup = root.create_group(f"{k:03d}")
-            self[k].to_root(subgroup, keys=keys, items=items)
         self._root = root
+        with Cow(self, False):
+            for key, group in self.items():
+                self[key] = group
 
     def to_memory(self, keys=None):
         for key in self.keys():
@@ -562,6 +554,14 @@ class SizeGroupedDataset:
         if self._data:
             if set(self.datakeys()) != set(value.keys()):
                 raise ValueError(f'Wrong set of data keys.')
+        value = deepcopy(value)
+        if self.cow or self._root is None:
+            value.to_memory()
+        else:
+            self._root.create_group(f"{key:03d}", overwrite=True)
+            value.to_root(self._root[f"{key:03d}"])
+        value.cow = self.cow
+        value.strict = self.strict
         self._data[key] = value
 
     def __getitem__(self, item: Union[int, Tuple[int, Sequence]]) -> Union[Dict, Tuple[Dict, Dict]]:
@@ -589,8 +589,12 @@ class SizeGroupedDataset:
 
     def flush(self, keys=None):
         if self._root is not None:
-            for g in self.values():
-                g.flush(keys=keys)
+            for key, group in self.items():
+                group_name = f"{key:03d}"
+                if group_name not in self._root.group_keys():
+                    self._root.create_group(group_name)
+                group._root = self._root[group_name]
+                group.flush(keys=keys)
             for key in self._root.keys():
                 if int(key) not in self.keys():
                     del self._root[key]
@@ -611,14 +615,11 @@ class SizeGroupedDataset:
             if k in self:
                 self[k].merge(other[k], strict=strict)
             else:
-                self[k] = deepcopy(other[k])
+                self[k] = other[k]
                 if len(self) > 0 and strict:
                     self[k].to_memory(keys=self.datakeys())
                 else:
                     self[k].to_memory()
-                if not (self.cow or self._root is None):
-                    self._root.create_group(f"{k:03d}")
-                    self[k].to_root(self._root[f"{k:03d}"])
 
     def random_split(self, *fractions, keys=None, root=None, seed=None, **kwargs):
 

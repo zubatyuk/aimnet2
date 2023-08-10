@@ -69,8 +69,6 @@ def test_reding_and_writing():
         pass
 
 
-
-
 def test_basic_functionality():
     root = zarr.group("test_data/test_zarr")
     clean_group(root)
@@ -78,15 +76,15 @@ def test_basic_functionality():
     r2 = root.create_group("dataset_2")
 
     dataset = SizeGroupedDataset.from_h5("test_data/test.h5", root=r1)
-    dataset.to_root(r2)
+    dataset.to_root("test_data/test_zarr/dataset_2")
 
     dataset.apply_peratom_shift("energy", "changed_energy")
     dataset.apply_peratom_shift("energy", "another_changed_energy")
     dataset.flush(keys=["changed_energy"])
-
     assert isinstance(dataset[dataset.keys()[0]]["changed_energy"], zarr.Array)
     assert isinstance(dataset[dataset.keys()[0]]["another_changed_energy"], np.ndarray)
 
+    dataset.to_root(r2)
     assert dataset._root == r2
 
     in_memory_dataset = SizeGroupedDataset(r1)
@@ -107,7 +105,6 @@ def test_basic_functionality():
 
     assert "energiya" not in dataset.datakeys()
 
-    print(len(dataset))
     assert len(dataset) == 2 * length
 
     key = next(iter(keys))
