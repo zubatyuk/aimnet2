@@ -1,8 +1,7 @@
 import os
 from collections import defaultdict
-from copy import deepcopy
 from glob import glob
-from typing import Union, Dict, Any, Tuple, Sequence, Optional, Iterable
+from typing import Union, Dict, Any, Tuple, Sequence, Iterable
 
 import h5py
 import numpy as np
@@ -158,7 +157,8 @@ class DataGroup:
                 deleted_keys = deleted_keys & set(keys)
 
             for key in changed_keys:
-                self[key] = self[key]
+                if isinstance(self[key], ndarray):
+                    self[key] = self[key]
 
             for key in deleted_keys:
                 del self._root[key]
@@ -294,6 +294,14 @@ class DataGroup:
         for idx in idxs:
             yield dict((k, to_array(v)[idx]) for k, v in self.items() if k in keys)
 
+    def copy(self, keys=None, root=None):
+        ins = self.__class__(root, False, self.strict)
+        keys = _get_keys(object_keys=self.keys(), user_keys=keys)
+        for key in keys:
+            ins[key] = to_array(self[key], copy=True)
+        ins.cow = self.cow
+        return ins
+
 
 class Cow:
     def __init__(self, dataset, cow=True):
@@ -301,7 +309,6 @@ class Cow:
         self.cow = cow
 
     def __enter__(self):
-        self.dataset.flush()
         self.dataset_cow = self.dataset.cow
         self.dataset.cow = self.cow
 
@@ -309,7 +316,6 @@ class Cow:
             group.cow = self.cow
 
     def __exit__(self, *args):
-        self.dataset.flush()
         self.dataset.cow = self.dataset_cow
 
         for group in self.dataset.values():
@@ -554,12 +560,11 @@ class SizeGroupedDataset:
         if self._data:
             if set(self.datakeys()) != set(value.keys()):
                 raise ValueError(f'Wrong set of data keys.')
-        value = deepcopy(value)
-        if self.cow or self._root is None:
-            value.to_memory()
+        if not (self.cow or self._root is None):
+            root = self._root.create_group(f"{key:03d}", overwrite=True)
         else:
-            self._root.create_group(f"{key:03d}", overwrite=True)
-            value.to_root(self._root[f"{key:03d}"])
+            root = None
+        value = value.copy(root=root)
         value.cow = self.cow
         value.strict = self.strict
         self._data[key] = value
