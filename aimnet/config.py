@@ -35,7 +35,7 @@ def load_yaml(config: Union[str, List, Dict], hyperpar: Optional[Union[Dict, str
             config = open(config).read()
         if hyperpar:
             config = Template(config).render(**hyperpar)
-        config = yaml.load(config, Loader=yaml.SafeLoader)
+        config = yaml.load(config, Loader=yaml.FullLoader)
     for d, k, v in _iter_rec_bottomup(config):
         if isinstance(v, str) and any(v.endswith(x) for x in ('.yml', '.yaml')):
             if not os.path.isfile(v):

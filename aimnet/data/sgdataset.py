@@ -95,7 +95,7 @@ class DataGroup:
         idx = np.arange(len(self))
         np.random.seed(seed)
         np.random.shuffle(idx)
-        sections = np.around(np.cumsum(fractions) * len(self)).astype(np.int)
+        sections = np.around(np.cumsum(fractions) * len(self)).astype(np.int64)
         return [self.__class__(self.sample(sidx)) if len(sidx) else self.__class__() for sidx in np.array_split(idx, sections)]
 
     def cv_split(self, cv: int = 5, seed=None):
@@ -522,7 +522,7 @@ class RandomWeightedSampler:
         self.uniform = uniform
         if 'sample_weight' not in ds.datakeys():
             for g in ds.groups:
-                g['sample_weight'] = np.full(len(g), 1000.0)
+                g['sample_weight'] = np.full(len(g), 1.0)
         if 'sample_idx' not in ds.datakeys():
             for g in ds.groups:
                 g['sample_idx'] = np.arange(len(g))
@@ -547,7 +547,8 @@ class RandomWeightedSampler:
     def __next__(self):
         if self._count == self.num_batches:
             raise StopIteration
-        g = np.random.choice(self._groups, replace=False, p=self._group_weights)
+        selection = np.random.choice(np.arange(len(self._groups)), replace=False, p=self._group_weights)
+        g = self._groups[selection]        
         #  oops. assume ds has coord
         _n = g['coord'].shape[1]
         if self.peratom_batches:
@@ -578,10 +579,15 @@ class RandomWeightedSampler:
                     _u = g['sample_weight_upd']
                     w = g['sample_weight_upd_mask'] 
                     if w.any():
-                        _u = _u[w]
-                        _u *= np.exp(- (_u / _mean_weight) ** 2 / 20)
-                        g['sample_weight'][w] = _u
-                    g['sample_weight'][~w] += _a
+                        w_inc = w & (_u > g['sample_weight'])
+                        g['sample_weight'][w_inc] = _u[w_inc]
+                        w_dec = w & (_u < g['sample_weight'])
+                        g['sample_weight'][w_dec] = g['sample_weight'][w_dec] * 0.8 + _u[w_dec] * 0.2
+
+#                        _u = _u[w]
+#                        _u *= np.exp(- (_u / _mean_weight) ** 2 / 20)
+#                        g['sample_weight'][w] = _u
+#                    g['sample_weight'][~w] += _a
 
             for g in self._groups:
                 g['sample_weight_upd_mask'] = np.full(len(g), False) 

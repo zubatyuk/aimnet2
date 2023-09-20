@@ -1,6 +1,6 @@
 import torch
 from torch import nn, Tensor
-from typing import List, Optional, Union, Dict
+from typing import List, Optional, Dict
 from aimnet import ops
 import math
 
@@ -77,17 +77,18 @@ class AEVSV(nn.Module):
 class AEVSV_NB(AEVSV):
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         coord_i = data['coord']
-        coord_j = coord_i[data['idx_j']]
+        _s0, _s1 = data['idx_j'].shape[0], data['idx_j'].shape[1]
+        coord_j = torch.index_select(coord_i, 0, data['idx_j'].flatten()).view(_s0, _s1, 3)
+        # coord_j = coord_i[data['idx_j']]
         if 'shifts' in data:
             shifts = data['shifts'] @ data['cell']
             coord_j = coord_j + shifts
         r_ij = coord_j - coord_i.unsqueeze(-2)
         d_ij2 = r_ij.pow(2).sum(-1)
-        #if 'nb_pad_mask' in data:
+        # if 'nb_pad_mask' in data:
         d_ij2 = d_ij2.masked_fill(data['nb_pad_mask'], self.dmat_fill)
         d_ij = d_ij2.sqrt()
         data['d_ij'] = d_ij
-        data['tst__d_ij'] = d_ij
         data['u_ij'], data['gs'], data['gv'] = self._calc_aev(r_ij, d_ij)
         return data
 

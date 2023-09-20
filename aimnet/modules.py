@@ -97,7 +97,8 @@ class AtomicSum(nn.Module):
         return f'key_in: {self.key_in}, key_out: {self.key_out}'
 
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
-        data[self.key_out] = data[self.key_in].sum(-1, dtype=torch.double)
+        x = data[self.key_in].sum(-1, dtype=torch.double)
+        data[self.key_out] = x
         return data
 
 
@@ -199,7 +200,7 @@ class Output(nn.Module):
         v = v.squeeze(-1)
         if self.apply_fn == 'pow2':
             v = v.pow(2)
-        data[self.key_out] = v.squeeze(-1) 
+        data[self.key_out] = v
         return data
 
 
@@ -342,7 +343,9 @@ class SRRep(nn.Module):
 class SRRep_NB(SRRep):
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         p_i = self.params(data['numbers'])
-        p_j = p_i[data['idx_j']]
+        _s0, _s1, = data['idx_j'].shape
+        p_j = torch.index_select(p_i, 0, data['idx_j'].flatten()).view(_s0, _s1, 2)
+        # p_j = p_i[data['idx_j']]
         p_ij = p_i.unsqueeze(-2) * p_j
         alpha_ij, zeff_ij = p_ij.unbind(-1)
         e = torch.exp(- alpha_ij * data['d_ij'].pow(1.5)) * zeff_ij / data['d_ij']
@@ -405,7 +408,9 @@ class LRCoulomb_NB(LRCoulomb):
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         if 'd_ij_coul' not in data:
             coord_i = data['coord']
-            coord_j = coord_i[data['idx_j_coul']]
+            _s0, _s1 = data['idx_j_coul'].shape
+            coord_j = torch.index_select(coord_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1, 3)
+            # coord_j = coord_i[data['idx_j_coul']]
             if 'shifts_coul' in data:
                 shifts = data['shifts_coul'] @ data['cell']
                 coord_j = coord_j + shifts
@@ -416,7 +421,9 @@ class LRCoulomb_NB(LRCoulomb):
         d_ij = data['d_ij_coul']
 
         q_i = data[self.key_in]
-        q_j = q_i[data['idx_j_coul']]
+        _s0, _s1 = data['idx_j_coul'].shape
+        q_j = torch.index_select(q_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1)
+        #q_j = q_i[data['idx_j_coul']]
         q_j = q_j.masked_fill(data['nb_pad_mask_coul'], 0.0)
         q_ij = q_i.unsqueeze(-1) * q_j
         fc = 1 - ops.exp_cutoff(d_ij, self.rc)
@@ -432,7 +439,9 @@ class NegLRCoulomb_NB(LRCoulomb):
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
        d_ij = data['d_ij']
        q_i = data[self.key_in]
-       q_j = q_i[data['idx_j']]
+       _s0, _s1 = data['idx_j'].shape
+       q_j = torch.index_select(q_i, 0, data['idx_j'].flatten()).view(_s0, _s1)
+       #q_j = q_i[data['idx_j']]
        q_j = q_j.masked_fill(data['nb_pad_mask'], 0.0)
        q_ij = q_i.unsqueeze(-1) * q_j
        fc = ops.exp_cutoff(d_ij, self.rc)
@@ -567,7 +576,9 @@ class D3BJ_NB(D3BJ):
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         if 'd_ij_coul' not in data:
             coord_i = data['coord']
-            coord_j = coord_i[data['idx_j_coul']]
+            _s0, _s1 = data['idx_j_coul'].shape
+            coord_j = torch.index_select(coord_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1, 3)
+            #coord_j = coord_i[data['idx_j_coul']]
             if 'shifts_coul' in data:
                 shifts = data['shifts_coul'] @ data['cell']
                 coord_j = coord_j + shifts
@@ -579,14 +590,19 @@ class D3BJ_NB(D3BJ):
         numbers = data['numbers']
 
         c6_i = data[self.key_in_c6].unsqueeze(-1)
-        c6_j = data[self.key_in_c6][data['idx_j_coul']]
+        _s0, _s1 = data['idx_j_coul'].shape
+        c6_j = torch.index_select(data[self.key_in_c6], 0, data['idx_j_coul'].flatten()).view(_s0, _s1)
+        #c6_j = data[self.key_in_c6][data['idx_j_coul']]
         alpha_i = data[self.key_in_alpha].unsqueeze(-1).clamp(min=1e-6)
-        alpha_j = data[self.key_in_alpha][data['idx_j_coul']].clamp(min=1e-6)
+        alpha_j = torch.index_select(data[self.key_in_alpha], 0, data['idx_j_coul'].flatten()).view(_s0, _s1).clamp(min=1e-6)
+        #alpha_j = data[self.key_in_alpha][data['idx_j_coul']].clamp(min=1e-6)
 
         c6ij = 2 * c6_i * c6_j / (c6_i * alpha_j / alpha_i + c6_j * alpha_i / alpha_j).clamp(min=1e-6)
 
         rrii = self.r4r2[numbers]
-        rrij = 3 * rrii.unsqueeze(-1) * rrii[data['idx_j_coul']]
+        rrii_j = torch.index_select(rrii, 0, data['idx_j_coul'].flatten()).view(_s0, _s1)
+        rrij = 3 * rrii.unsqueeze(-1) * rrii_j
+        #rrij = 3 * rrii.unsqueeze(-1) * rrii[data['idx_j_coul']]
         r0ij = self.a1 * rrij.sqrt() + self.a2
         d_ij = d_ij.to(torch.double)
         e_ij = c6ij * (self.s6 / (d_ij.pow(6) + r0ij.pow(6)) + self.s8 * rrij / (d_ij.pow(8) + r0ij.pow(8)))
@@ -654,7 +670,9 @@ class CoulombDSFSwitched_NB(CoulombDSFSwitched):
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         if 'd_ij_coul' not in data:
             coord_i = data['coord']
-            coord_j = coord_i[data['idx_j_coul']]
+            _s0, _s1 = data['idx_j_coul'].shape
+            coord_j = torch.index_select(coord_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1, 3)            
+            # coord_j = coord_i[data['idx_j_coul']]
             if 'shifts_coul' in data:
                 shifts = data['shifts_coul'] @ data['cell']
                 coord_j = coord_j + shifts
@@ -666,7 +684,9 @@ class CoulombDSFSwitched_NB(CoulombDSFSwitched):
         d_ij = data['d_ij_coul']
 
         q_i = data[self.key_in]
-        q_j = q_i[data['idx_j_coul']]
+        _s0, _s1 = data['idx_j_coul'].shape
+        q_j = torch.index_select(q_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1)        
+        #q_j = q_i[data['idx_j_coul']]
         q_j = q_j.masked_fill(data['nb_pad_mask_coul'] | (d_ij > self.r_cut), 0.0)
         q_ij = q_i.unsqueeze(-1) * q_j
 
@@ -691,7 +711,9 @@ class CoulombDSF_NB(nn.Module):
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         if 'd_ij_coul' not in data:
             coord_i = data['coord']
-            coord_j = coord_i[data['idx_j_coul']]
+            _s0, _s1 = data['idx_j_coul'].shape
+            coord_j = torch.index_select(coord_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1, 3)            
+            # coord_j = coord_i[data['idx_j_coul']]
             if 'shifts_coul' in data:
                 shifts = data['shifts_coul'] @ data['cell']
                 coord_j = coord_j + shifts
@@ -703,7 +725,9 @@ class CoulombDSF_NB(nn.Module):
         d_ij = data['d_ij_coul']
 
         q_i = data[self.key_in]
-        q_j = q_i[data['idx_j_coul']]
+        _s0, _s1 = data['idx_j_coul'].shape
+        q_j = torch.index_select(q_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1)        
+        #q_j = q_i[data['idx_j_coul']]
         q_j = q_j.masked_fill(data['nb_pad_mask_coul'] | (d_ij > data['coul_cutoff']), 0.0)
         q_ij = q_i.unsqueeze(-1) * q_j
 
@@ -737,7 +761,9 @@ class CoulombLR_DSF_NB(nn.Module):
         # short range part
         if 'd_ij' not in data:
             coord_i = data['coord']
-            coord_j = coord_i[data['idx_j']]
+            _s0, _s1 = data['idx_j'].shape
+            coord_j = torch.index_select(coord_i, 0, data['idx_j'].flatten()).view(_s0, _s1, 3)            
+            # coord_j = coord_i[data['idx_j']]
             if 'shifts' in data:
                 shifts = data['shifts'] @ data['cell']
                 coord_j = coord_j + shifts
@@ -747,7 +773,9 @@ class CoulombLR_DSF_NB(nn.Module):
             data['d_ij'] = d_ij2.sqrt()
         d_ij = data['d_ij']
         q_i = data[self.key_in]
-        q_j = q_i[data['idx_j']]
+        _s0, _s1 = data['idx_j'].shape
+        q_j = torch.index_select(q_i, 0, data['idx_j'].flatten()).view(_s0, _s1)        
+        #q_j = q_i[data['idx_j']]
         q_j = q_j.masked_fill(data['nb_pad_mask'], 0.0)
         q_ij = q_i.unsqueeze(-1) * q_j
         fc = ops.exp_cutoff(d_ij, self.rc)
@@ -756,7 +784,9 @@ class CoulombLR_DSF_NB(nn.Module):
         # DSF part
         if 'd_ij_coul' not in data:
             coord_i = data['coord']
-            coord_j = coord_i[data['idx_j_coul']]
+            _s0, _s1 = data['idx_j_coul'].shape
+            coord_j = torch.index_select(coord_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1, 3)            
+            # coord_j = coord_i[data['idx_j_coul']]
             if 'shifts_coul' in data:
                 shifts = data['shifts_coul'] @ data['cell']
                 coord_j = coord_j + shifts
@@ -767,7 +797,9 @@ class CoulombLR_DSF_NB(nn.Module):
 
         d_ij = data['d_ij_coul']
         q_i = data[self.key_in]
-        q_j = q_i[data['idx_j_coul']]
+        _s0, _s1 = data['idx_j_coul'].shape
+        q_j = torch.index_select(q_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1)        
+        #q_j = q_i[data['idx_j_coul']]
         q_j = q_j.masked_fill(data['nb_pad_mask_coul'] | (d_ij > data['coul_cutoff']), 0.0)
         q_ij = q_i.unsqueeze(-1) * q_j
 
@@ -790,18 +822,14 @@ class CoulombLR_DSF_NB(nn.Module):
         return data
 
 
-class CoulombLR_SF_NB(nn.Module):
-    def __init__(self, key_in: str = 'charges', key_out: str = 'e_h', rc: float = 4.6):
-        super().__init__()
-        self.register_parameter('rc', nn.Parameter(torch.tensor(rc), requires_grad=False))
-        self.key_in = key_in
-        self.key_out = key_out
-
+class CoulombLR_SF_NB(LRCoulomb):
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         # short range part
         if 'd_ij' not in data:
             coord_i = data['coord']
-            coord_j = coord_i[data['idx_j']]
+            _s0, _s1 = data['idx_j'].shape
+            coord_j = torch.index_select(coord_i, 0, data['idx_j'].flatten()).view(_s0, _s1, 3)            
+            # coord_j = coord_i[data['idx_j']]
             if 'shifts' in data:
                 shifts = data['shifts'] @ data['cell']
                 coord_j = coord_j + shifts
@@ -811,7 +839,9 @@ class CoulombLR_SF_NB(nn.Module):
             data['d_ij'] = d_ij2.sqrt()
         d_ij = data['d_ij']
         q_i = data[self.key_in]
-        q_j = q_i[data['idx_j']]
+        _s0, _s1 = data['idx_j'].shape
+        q_j = torch.index_select(q_i, 0, data['idx_j'].flatten()).view(_s0, _s1)        
+        #q_j = q_i[data['idx_j']]
         q_j = q_j.masked_fill(data['nb_pad_mask'], 0.0)
         q_ij = q_i.unsqueeze(-1) * q_j
         fc = ops.exp_cutoff(d_ij, self.rc)
@@ -820,7 +850,9 @@ class CoulombLR_SF_NB(nn.Module):
         # SF part
         if 'd_ij_coul' not in data:
             coord_i = data['coord']
-            coord_j = coord_i[data['idx_j_coul']]
+            _s0, _s1 = data['idx_j_coul'].shape
+            coord_j = torch.index_select(coord_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1, 3)            
+            # coord_j = coord_i[data['idx_j_coul']]
             if 'shifts_coul' in data:
                 shifts = data['shifts_coul'] @ data['cell']
                 coord_j = coord_j + shifts
@@ -831,7 +863,9 @@ class CoulombLR_SF_NB(nn.Module):
 
         d_ij = data['d_ij_coul']
         q_i = data[self.key_in]
-        q_j = q_i[data['idx_j_coul']]
+        _s0, _s1 = data['idx_j_coul'].shape
+        q_j = torch.index_select(q_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1)        
+        #q_j = q_i[data['idx_j_coul']]
         q_j = q_j.masked_fill(data['nb_pad_mask_coul'] | (d_ij > data['coul_cutoff']), 0.0)
         q_ij = q_i.unsqueeze(-1) * q_j
 
@@ -861,7 +895,9 @@ class Coulomb_SF_NB(nn.Module):
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         if 'd_ij_coul' not in data:
             coord_i = data['coord']
-            coord_j = coord_i[data['idx_j_coul']]
+            _s0, _s1 = data['idx_j_coul'].shape
+            coord_j = torch.index_select(coord_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1, 3)            
+            # coord_j = coord_i[data['idx_j_coul']]
             if 'shifts_coul' in data:
                 shifts = data['shifts_coul'] @ data['cell']
                 coord_j = coord_j + shifts
@@ -872,7 +908,9 @@ class Coulomb_SF_NB(nn.Module):
 
         d_ij = data['d_ij_coul']
         q_i = data[self.key_in]
-        q_j = q_i[data['idx_j_coul']]
+        _s0, _s1 = data['idx_j_coul'].shape
+        q_j = torch.index_select(q_i, 0, data['idx_j_coul'].flatten()).view(_s0, _s1)        
+        #q_j = q_i[data['idx_j_coul']]
         q_j = q_j.masked_fill(data['nb_pad_mask_coul'] | (d_ij > data['coul_cutoff']), 0.0)
         q_ij = q_i.unsqueeze(-1) * q_j
 

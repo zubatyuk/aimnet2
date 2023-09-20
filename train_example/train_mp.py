@@ -9,7 +9,7 @@ import torch
 from torch import jit, nn, optim, Tensor
 import ignite.distributed as idist
 from ignite.handlers import ModelCheckpoint, global_step_from_engine, TerminateOnNan
-from ignite.handlers import param_scheduler
+from ignite.contrib.handlers import param_scheduler
 from ignite.engine import Events, _prepare_batch, Engine
 from ignite.contrib.handlers.wandb_logger import WandBLogger, OptimizerParamsHandler
 from ignite.contrib.handlers.tqdm_logger import ProgressBar
@@ -17,14 +17,21 @@ import re
 import yaml
 from aimnet.modules import Forces
 import numpy as np
+import sys
 
+#torch.backends.cuda.matmul.allow_tf32 = False
+#torch.backends.cudnn.allow_tf32 = False
 
-if os.environ.get('CUDA_DISABLE_TF32'):
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
+JIT = False
+
 
 WORLD_SIZE = int(os.environ.get('WORLD_SIZE', '1'))
 LOCAL_RANK = int(os.environ.get('LOCAL_RANK', '0'))
+
+if os.environ.get('SKIP_IDS'):
+    bad_ids = np.loadtxt(os.environ['SKIP_IDS'], dtype='S')
+else:
+    bad_ids = np.array([])
 
 
 if LOCAL_RANK == 0:
@@ -36,82 +43,58 @@ else:
 def make_seed():
     return int.from_bytes(os.urandom(2), 'big')
 
-
-def pop_bad_ids(ds):
-    if '_id' in ds.datakeys() and os.environ.get('BAD_IDS'):
-        bad_ids = np.loadtxt(os.environ.get('BAD_IDS'), dtype='S')
-        for _n, g in list(ds.items()):
-            w = np.isin(g['_id'], bad_ids)
-            if w.any():
-                g = g.sample(~w)
-            if len(g):
-                ds._data[_n] = g
-            else:
-                ds._data.pop(_n)
-    return ds
-
-
-def load_dataset(config, typ='train'):
-    keys = config['loader']['x'] + config['loader']['y']
-    if os.environ.get('BAD_IDS'):
-        keys.append('_id')
-    ds_mod = get_module(config['class'])
-    ds = ds_mod(config[typ], keys=keys, **config.get('kwargs', {}))
-    logging.info(f"Loaded {typ} dataset from {config[typ]} with {len(ds)} samples.")
-    # try bad ids
-    _n0 = len(ds)
-    ds = pop_bad_ids(ds)
-    if len(ds) != _n0:
-        logging.info(f"Using {len(ds)} samples for {typ}")
-    # self atomic energies
-    if 'energy' in keys:
-        sae_name = config['train'].replace('.h5', '.sae')
-        sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
-        ds.apply_peratom_shift('energy', 'energy', sap_dict=sae)
-    # average volumes
-    if 'volumes' in keys:
-        sae_name = config['train'].replace('.h5', '.avg_vols')
-        sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
-        ds.apply_pertype_logratio('volumes', 'volumes')
-    if 'dftd3_c6' in keys:
-        sae_name = config['train'].replace('.h5', '.avg_c6')
-        sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
-        ds.apply_pertype_logratio('dftd3_c6', 'dftd3_c6')
-    if 'dftd4_c6' in keys:
-        sae_name = config['train'].replace('.h5', '.avg_c6')
-        sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
-        ds.apply_pertype_logratio('dftd4_c6', 'dftd4_c6')        
-    if 'dftd4_alpha' in keys:
-        sae_name = config['train'].replace('.h5', '.avg_alpha')
-        sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
-        ds.apply_pertype_logratio('dftd4_alpha', 'dftd4_alpha')
-    return ds
-
-
 def get_loaders(config: Dict):
-    # create seed
     seed = make_seed()
     if WORLD_SIZE > 1:
         seed = idist.all_reduce(seed)
+    ds_mod = get_module(config['class'])
+    ds_train = ds_mod(config['train'], **config.get('kwargs', {}))
+    logging.info(f"Loaded train dataset from {config['train']} with {len(ds_train)} samples.")
 
-    ds_train = load_dataset(config, 'train')
-    if config.get('val'):
-        ds_val = load_dataset(config, 'val')
-    else:
-        logging.info(f'Will use 10% of train dataset for validation.')
-        ds_val = ds_train.random_split(0.1)[0]
-    
-    # merge-pad groups
-    ds_train.merge_groups(8 * config['loader']['batch_size'])
-    
-    # train loader
-    num_batches = 500
+    if '_id' in ds_train.datakeys() and len(bad_ids):
+      for _n, g in ds_train.items():
+        if _n == 1:
+            continue
+        w = ~ np.isin(g['_id'], bad_ids)
+        if w.any():
+            ds_train._data[_n] = g.sample(w)
+        else:
+            ds_train._data.pop(_n)            
+
+    print(f'Using {len(ds_train)} samples.')
+
+    sae_name = config['train'].replace('.h5', '.sae')
+    sae = yaml.load(open(sae_name).read(), Loader=yaml.SafeLoader)
+    ds_train.apply_peratom_shift('energy', 'energy', sap_dict=sae)
+
+    ds_train.merge_groups(16*1024)
     loader_kwargs = config['loader']
+    #num_batches = int(len(ds_train) / loader_kwargs['batch_size'] / 10)
+    #num_batches = int(idist.all_reduce(num_batches) / WORLD_SIZE)
+    num_batches = 500
+
     loader_train = ds_train.weighted_loader(num_batches=num_batches, seed=seed+LOCAL_RANK, pin_memory=True, **loader_kwargs)
 
-    # val loader
-    config['loader']['batch_size'] *= 2
-    loader_val = ds_val.get_loader(shuffle=False, pin_memory=True, rank=LOCAL_RANK, world_size=WORLD_SIZE, **config['loader'])
+    if config.get('val'):
+        ds_val = ds_mod(config['val'], **config.get('kwargs', {}))
+        ds_val.apply_peratom_shift('energy', 'energy', sap_dict=sae)
+        if '_id' in ds_val.datakeys() and len(bad_ids):
+          for _n, g in ds_val.items():
+            if _n > 1:
+                w = ~ np.isin(g['_id'], bad_ids)
+            else:
+                w = np.ones(len(g), dtype=bool)
+            if w.sum() >= WORLD_SIZE:
+                ds_val._data[_n] = g.sample(w)
+            else:
+                ds_val._data.pop(_n)
+
+        logging.info(f"Loaded val dataset from {config['val']} with {len(ds_val)} samples.")
+        config['loader']['batch_size'] *= 2
+        loader_val = ds_val.get_loader(shuffle=False, pin_memory=True, rank=LOCAL_RANK, world_size=WORLD_SIZE, **config['loader'])
+    else:
+        loader_val = None
+    
 
     return loader_train, loader_val
 
@@ -123,6 +106,8 @@ def create_supervised_trainer(
     device: Optional[Union[str, torch.device]] = None,
     non_blocking: bool = False,
     prepare_batch: Callable = _prepare_batch,
+    output_transform: Callable = lambda x, y, y_pred, loss: loss.item(),
+    deterministic: bool = False,
 ) -> Engine:
     """Factory function for creating a trainer for supervised models.
     Args:
@@ -166,6 +151,7 @@ def create_supervised_trainer(
         loss.backward()
 
         torch.nn.utils.clip_grad_value_(model.parameters(), 0.4)
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
         optimizer.step()
 
         persample_loss = persample_loss.detach()
@@ -289,8 +275,8 @@ def build_config(model_cfg, train_cfg, hp_cfg, hp_search_mode=False):
             f.write(yaml.dump(train_cfg))
 
     # datasets must be defined  with AIMNET_TRAIN and AIMNET_VAL env vars
-    train_cfg['data']['train'] = os.environ['AIMNET_TRAIN'].replace('__N.', '__' + str(LOCAL_RANK)+'.')
-    train_cfg['data']['val'] = os.environ.get('AIMNET_VAL')
+    train_cfg['data']['train'] = os.environ['AIMNET_TRAIN'].replace('__N', '__' + str(LOCAL_RANK))
+    train_cfg['data']['val'] = os.environ.get('AIMNET_VAL')# .replace('__N', '__' + str(LOCAL_RANK))
     return model_cfg, train_cfg
 
 
@@ -300,7 +286,7 @@ def build_model(config, compile=True, force_mod=None):
         model = jit.script(model)
     if force_mod is not None:
         model = force_mod(model)
-    model = idist.auto_model(model, find_unused_parameters=False)
+    model = idist.auto_model(model)
     logging.info('Build model:')
     logging.info(str(model))
     return model
@@ -309,18 +295,18 @@ def build_model(config, compile=True, force_mod=None):
 def get_parameters(model: nn.Module, config: Dict) -> List:
     force_train = config.get('force_train', [])
     force_notrain = config.get('force_notrain', [])
-    params = list()
-    _n = 0
-    logging.info(f"Trainable parameters:")
     for n, p in model.named_parameters():
-        if any(re.search(x, n) for x in force_notrain):
-            p.requires_grad_(False)
-        if any(re.search(x, n) for x in force_train):
+        if any(re.match(x, n) for x in force_train):
             p.requires_grad_(True)
+        if any(re.match(x, n) for x in force_notrain):
+            p.requires_grad_(False)
+    params = list(filter(lambda x: x.requires_grad, model.parameters()))
+    logging.info(f"Trainable parameters:")
+    _n = 0
+    for n, p in model.named_parameters():
         if p.requires_grad:
-            params.append(p)
             logging.info(f"{n} {p.shape}")
-            _n += p.numel()
+        _n += p.numel()
     logging.info(f'Total: {_n}')
     return params
 
@@ -367,6 +353,8 @@ def build_engine(net, config, loader_val=None):
     loss_fn = build_module(train_cfg['loss'])
     if isinstance(loss_fn, nn.Module):
         loss_fn = loss_fn.to(device)
+        if JIT:
+            loss_fn = torch.jit.script(loss_fn)
         optimizer.param_groups[0]['params'].extend(filter(lambda p: p.requires_grad, loss_fn.parameters()))
 
     optimizer = idist.auto_optim(optimizer)
@@ -428,6 +416,16 @@ def build_engine(net, config, loader_val=None):
         net = unwrap_module(net)
         chk_engine.add_event_handler(Events.EPOCH_COMPLETED, model_checkpoint, {'model': net})
 
+#    @trainer.on(Events.EPOCH_COMPLETED(every=10))
+    def save_weighs_hist(engine):
+        ds = engine.state.dataloader.dataset
+        w = ds.concatenate('sample_weight')
+        h = np.histogram(w, 100)
+        name = f'weights_hist_{LOCAL_RANK}_{engine.state.iteration}.txt'
+        with open(name, 'w') as f:
+            for k, v in zip(*h):
+                f.write(f'{k} {v}\n')
+
     return trainer
 
 
@@ -440,12 +438,12 @@ def unwrap_module(net):
 
 
 def run(local_rank, model_cfg, train_cfg, load, save):
-    model = build_model(model_cfg, compile=False)
+    model = build_model(model_cfg, compile=JIT)
     if load is not None:
         device = next(model.parameters()).device
-        logging.info(f'Loading weights from file {load}')
+        print('Loading weights from file', load)
         sd = torch.load(load, map_location=device)
-        logging.info(unwrap_module(model).load_state_dict(sd, strict=False))
+        print(unwrap_module(model).load_state_dict(sd, strict=False))
     train_loader, val_loader = get_loaders(train_cfg['data'])
     if 'forces' in next(iter(train_loader))[1]:
         model = Forces(model)
@@ -454,6 +452,7 @@ def run(local_rank, model_cfg, train_cfg, load, save):
         pbar = ProgressBar()
         pbar.attach(trainer, metric_names='all', event_name=Events.ITERATION_COMPLETED(every=200))
     max_epochs = train_cfg.get('epochs', 100)
+    #with torch.autograd.detect_anomaly():
     trainer.run(train_loader, max_epochs=max_epochs)
     if save is not None:
         torch.save(unwrap_module(model).state_dict(), save)
