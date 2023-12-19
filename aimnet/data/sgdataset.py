@@ -95,7 +95,7 @@ class DataGroup:
         idx = np.arange(len(self))
         np.random.seed(seed)
         np.random.shuffle(idx)
-        sections = np.around(np.cumsum(fractions) * len(self)).astype(np.int)
+        sections = np.around(np.cumsum(fractions) * len(self)).astype(np.int64)
         return [self.__class__(self.sample(sidx)) if len(sidx) else self.__class__() for sidx in np.array_split(idx, sections)]
 
     def cv_split(self, cv: int = 5, seed=None):
