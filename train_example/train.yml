@@ -42,12 +42,6 @@ loss:
        weights: [1.0]
      - fn: psloss.forces_loss_fn
        weights: [0.2]
-     - fn: psloss.charges_loss_fn
-       weights: [0.05]
-     - fn: psloss.c6i_loss_fn
-       weights: [0.02]
-     - fn: psloss.alpha_loss_fn
-       weights: [0.01]
 
 metric:
   class: aimnet.train.metrics.RegMultiMetric
