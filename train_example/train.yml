@@ -42,6 +42,11 @@ loss:
        weights: [1.0]
      - fn: psloss.forces_loss_fn
        weights: [0.2]
+     - fn: psloss.peratom_loss_fn
+       kwargs:
+         key_pred: charges
+         key_true: charges
+       weights: [0.05]
 
 metric:
   class: aimnet.train.metrics.RegMultiMetric
