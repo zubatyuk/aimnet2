@@ -223,16 +223,18 @@ class Quadrupole(Dipole):
 
 
 class SRRep(nn.Module):
+    """GFN1-stype short range repulsion function
+    """
     def __init__(self, key_out='e_rep', cutoff_fn='none', rc=5.2, reduce_sum=True):
         super().__init__()
-        from aimnet.data import gfn1_repa, gfn1_repb
+        from aimnet.constants import get_gfn1_rep
 
         self.key_out = key_out
         self.cutoff_fn = cutoff_fn
         self.reduce_sum = reduce_sum
 
         self.register_buffer('rc', torch.tensor(rc))
-        
+        gfn1_repa, gfn1_repb = get_gfn1_rep()
         weight = torch.stack([gfn1_repa, gfn1_repb], axis=-1)
         self.params = nn.Embedding(87, 2, padding_idx=0, _weight=weight)
         self.params.weight.requires_grad_(False)
