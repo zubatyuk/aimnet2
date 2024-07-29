@@ -1,4 +1,7 @@
 # AIMNet2
 
-Python code for AIMNet2 models
+AIMNet2: Fast accurate neural network potential
+
+
+
 

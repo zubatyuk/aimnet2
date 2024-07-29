@@ -1,82 +1,197 @@
+import math
+from typing import Dict, Optional, Tuple
+
 import torch
 from torch import Tensor
-from typing import Dict
-import math
+
+from aimnet import nbops
 
 
-def quad_eigh(v: Tensor) -> Tensor:
-    xx, xy, yy, xz, yz, zz = v.unbind(-1)
-    xy2, xz2, yz2 = torch.stack([xy, xz, yz], dim=0).pow(2).unbind(dim=0)
-    xxyy = xx * yy
-    l1 = xx + yy + zz
-    l2 = xxyy + yy * zz + xx * zz - xy2 - yz2 - xz2
-    l3 = xxyy * zz + 2 * xz * xy * yz - xz2 * yy - xx * yz2 - xy2 * zz
-    return torch.stack([l1, l2, l3], dim=-1)
+def lazy_calc_dij_lr(data: Dict[str, Tensor]) -> Dict[str, Tensor]:
+    if 'd_ij_lr' not in data:
+        nb_mode = nbops.get_nb_mode(data)
+        if nb_mode == 0:
+            data['d_ij_lr'] = data['d_ij']
+        else:
+            data['d_ij_lr'] = calc_distances(data, suffix='_lr')[0]
+    return data
 
 
-def cosine_cutoff(d: Tensor, rc: Tensor) -> Tensor:
-    fc = (d / rc).clamp(0, 1)
-    fc = 0.5 * (math.pi * fc).cos() + 0.5
+def calc_distances(data: Dict[str, Tensor], suffix: str = '', pad_value: float=1.0) -> Tuple[Tensor, Tensor]:
+    coord_i, coord_j = nbops.get_ij(data["coord"], data, suffix)
+    if "shifts" in data:
+        assert "cell" in data, "cell is required if shifts are provided"
+        shifts = data["shifts"] @ data["cell"]
+        coord_j = coord_j + shifts
+    r_ij = coord_j - coord_i
+    d_ij = torch.norm(r_ij, dim=-1)
+    d_ij = nbops.mask_ij(d_ij, data, pad_value, suffix)
+    return d_ij, r_ij
+
+
+def center_coordinates(coord: Tensor, data: Dict[str, Tensor], masses: Optional[Tensor] = None) -> Tensor:
+    if masses is not None:
+        masses = masses.unsqueeze(-1)
+        center = nbops.mol_sum(coord * masses, data) / nbops.mol_sum(masses, data) / data['mol_sizes'].unsqueeze(-1)
+    else:
+        center = nbops.mol_sum(coord, data) / data['mol_sizes']
+    nb_mode = nbops.get_nb_mode(data)
+    if nb_mode in (0, 2):
+        center = center.unsqueeze(-2)
+    coord = coord - center
+    return coord
+
+
+def cosine_cutoff(d_ij: Tensor, rc: float) -> Tensor:
+    fc = 0.5 * (torch.cos(d_ij.clamp(min=1e-6, max=rc) * (math.pi / rc)) + 1.0)
     return fc
 
 
 def exp_cutoff(d: Tensor, rc: Tensor) -> Tensor:
-    fc = torch.exp(-1.0 / (1.0 - (d/rc).clamp(0, 1.0-1e-6).pow(2))
-                   ) / 0.36787944117144233
+    fc = (
+        torch.exp(-1.0 / (1.0 - (d / rc).clamp(0, 1.0 - 1e-6).pow(2)))
+        / 0.36787944117144233
+    )
     return fc
 
 
-def exp_expand(d: Tensor, shifts: Tensor, eta: Tensor) -> Tensor:
-    return torch.exp(-eta * (d.unsqueeze(-1) - shifts).pow(2))
+def exp_expand(d_ij: Tensor, shifts: Tensor, eta: float) -> Tensor:
+    # expand on axis -2, e.g. (b, n, m) -> (b, n, shifts, m)
+    return torch.exp(-eta * (d_ij.unsqueeze(-2) - shifts.unsqueeze(-1)) ** 2)
 
 
-def exp_expand_cutoff(d: Tensor, shifts: Tensor, eta: Tensor, rc: Tensor) -> Tensor:
-    return torch.exp(-1.0 / (1.0 - (d / rc).pow(2).clamp(max=1-1e-4)) - eta * (d - shifts).pow(2))
+def nse(Q: Tensor, q_u: Tensor, f_u: Tensor, data: Dict[str, Tensor]) -> Tensor:
+    # Q and q_u and f_u must have last dimension size 1 or 2
+    F_u = nbops.mol_sum(f_u, data)
+    Q_u = nbops.mol_sum(q_u, data)
+    dQ = Q - Q_u
+    # for loss
+    data['_dQ'] = dQ
 
-
-def triu_mask(n: int, device: torch.device, diagonal: int = 1) -> torch.Tensor:
-    mask = torch.ones(n, n, device=device, dtype=torch.bool)
-    mask = torch.triu(mask, diagonal=diagonal)
-    return mask
-
-
-def nqe(Q, q_u, f):
-    f = f.pow(2)
-    if f.ndim > 1:
-        Q_u = q_u.sum(-1, keepdim=True)
-        #F_s = f.sum(-1, keepdim=True).clamp(min=1e-4)
-        F_s = f.sum(-1, keepdim=True) + 1e-6
-        q = q_u + f * (Q.unsqueeze(-1) - Q_u) / F_s
+    nb_mode = nbops.get_nb_mode(data)
+    if nb_mode in (0, 2):
+        F_u = F_u.unsqueeze(-2)
+        dQ = dQ.unsqueeze(-2)
+    elif nb_mode == 1:
+        data['mol_sizes'][-1] += 1
+        F_u = torch.repeat_interleave(F_u, data['mol_sizes'], dim=0)
+        dQ = torch.repeat_interleave(dQ, data['mol_sizes'], dim=0)
+        data['mol_sizes'][-1] -= 1
     else:
-        Q_u = q_u.sum()
-        #F_s = f.sum().clamp(min=1e-4)
-        F_s = f.sum() + 1e-6
-        q = q_u + f * (Q - Q_u) / F_s
+        raise ValueError(f"Invalid neighbor mode: {nb_mode}")
+    f = f_u / F_u
+    q = q_u + f * dQ
     return q
 
 
-def nse(Q, q_u, f):
-    f = f.pow(2)
-    if f.ndim > 2:
-        Q_u = q_u.sum(-2, keepdim=True)
-        F_s = f.sum(-2, keepdim=True) + 1e-6
-        q = q_u + f * (Q.unsqueeze(-2) - Q_u) / F_s
-    else:
-        Q_u = q_u.sum(0)
-        F_s = f.sum(0) + 1e-6
-        q = q_u + f * (Q - Q_u) / F_s
-    return q
-    
+def coulomb_potential_dsf(q_j: Tensor, d_ij: Tensor, Rc: float, alpha: float, data: Dict[str, Tensor]) -> Tensor:
+    _c1 = (alpha * d_ij).erfc() / d_ij
+    _c2 = math.erfc(alpha * Rc) / Rc
+    _c3 = _c2 / Rc
+    _c4 = 2 * alpha * math.exp(- (alpha * Rc) ** 2) / (Rc * math.pi ** 0.5)
+    epot = q_j * (_c1 - _c2 + (d_ij - Rc) * (_c3 + _c4))
+    epot = nbops.mask_ij_(epot, data, 0.0)
+    epot = nbops.mol_sum(epot, data)
+    return epot
 
-def calc_pad_mask(data: Dict[str, Tensor]) -> Dict[str, Tensor]:
-    numbers = data['numbers']
-    mask = numbers == 0
-    if mask.any():
-        data['pad_mask'] = mask
-        data['_natom'] = (~mask).sum(dim=-1).to(torch.float)
-    else:
-        data['pad_mask'] = torch.tensor([0], device=numbers.device)
-        data['_natom'] = torch.tensor(
-            numbers.shape[1], dtype=torch.float, device=numbers.device).unsqueeze(0)
-    return data
 
+def get_shifts_within_cutoff(cell: Tensor, cutoff: float) -> Tensor:
+    assert cell.shape == (3, 3), 'Batch cell is not supported'
+    cell_inv = torch.inverse(cell).mT
+    inv_distances = cell_inv.norm(p=2, dim=-1)
+    num_repeats = torch.ceil(cutoff * inv_distances).to(torch.long)
+    device = cell.device
+    shifts = torch.cartesian_prod(
+        torch.arange(-num_repeats[0], num_repeats[0] + 1, device=device),
+        torch.arange(-num_repeats[1], num_repeats[1] + 1, device=device),
+        torch.arange(-num_repeats[2], num_repeats[2] + 1, device=device)
+        ).to(torch.float)
+    return shifts
+
+
+def coulomb_ewald(coord: Tensor, cell: Tensor, charges: Tensor) -> Tensor:
+    # single molecule implementation. nb_mode == 1
+    accuracy = 1e-8
+    N = coord.shape[0]
+    volume = torch.det(cell)
+    eta = ((volume ** 2 / N) ** (1 / 6)) / math.sqrt(2.0 * math.pi)
+    cutoff_real = math.sqrt(-2.0 * math.log(accuracy)) * eta
+    cutoff_recip = math.sqrt(-2.0 * math.log(accuracy)) / eta
+
+    # real space
+    _grad_mode = torch.is_grad_enabled()
+    torch.set_grad_enabled(False)
+    shifts = get_shifts_within_cutoff(cell, cutoff_real)  # (num_shifts, 3)
+    torch.set_grad_enabled(_grad_mode)
+    disps_ij = coord[None, :, :] - coord[:, None, :]
+    disps = disps_ij[None, :, :, :] + torch.matmul(shifts, cell)[:, None, None, :]
+    distances_all = torch.linalg.norm(disps, dim=-1)  # (num_shifts, num_atoms, num_atoms)
+    within_cutoff = (distances_all > 0.1) & (distances_all < cutoff_real)
+    distances = distances_all[within_cutoff]
+    e_real_matrix_aug = torch.zeros_like(distances_all)
+    e_real_matrix_aug[within_cutoff] = torch.erfc(distances / (math.sqrt(2) * eta)) / distances
+    e_real_matrix = e_real_matrix_aug.sum(dim=0)
+
+    # reciprocal space
+    recip = 2 * math.pi * torch.transpose(torch.linalg.inv(cell), 0, 1)
+    _grad_mode = torch.is_grad_enabled()
+    torch.set_grad_enabled(False)
+    shifts = get_shifts_within_cutoff(recip, cutoff_recip)
+    torch.set_grad_enabled(_grad_mode)
+    ks_all = torch.matmul(shifts, recip)
+    length_all = torch.linalg.norm(ks_all, dim=-1)
+    within_cutoff = (length_all > 0.1) & (length_all < cutoff_recip)
+    ks = ks_all[within_cutoff]
+    length = length_all[within_cutoff]
+    # disps_ij[i, j, :] is displacement vector r_{ij}, (num_atoms, num_atoms, 3)
+    # disps_ij = coord[None, :, :] - coord[:, None, :] # computed above
+    phases = torch.sum(ks[:, None, None, :] * disps_ij[None, :, :, :], dim=-1)
+    e_recip_matrix_aug = (
+        torch.cos(phases)
+        * torch.exp(-0.5 * torch.square(eta * length[:, None, None]))
+        / torch.square(length[:, None, None])
+    )
+    e_recip_matrix = (
+        4.0
+        * math.pi
+        / volume
+        * torch.sum(e_recip_matrix_aug, dim=0)
+    )
+    # self interaction
+    device = coord.device
+    diag = -math.sqrt(2.0 / math.pi) / eta * torch.ones(N, device=device)
+    e_self_matrix = torch.diag(diag)
+
+    energy_matrix = e_real_matrix + e_recip_matrix + e_self_matrix
+    e = (energy_matrix * charges[:, None] * charges[None, :]).sum()
+    return e
+
+
+def huber(x: Tensor, delta: float = 1.0) -> Tensor:
+    return torch.where(x.abs() < delta, 0.5 * x ** 2, delta * (x.abs() - 0.5 * delta))
+
+
+def bumpfn(x: Tensor, low: float = 0.0, high: float = 1.0) -> Tensor:
+    """ For x > 0, return smooth transition function which is 0 for x <= low and 1 for x >= high
+    """
+    x = (x - low) / (high - low)
+    x = x.clamp(min=1e-6, max=1-1e-6)
+    a = (-1 / x).exp()
+    b = (-1 / (1 - x)).exp()
+    return a / (a + b)
+
+
+def smoothstep(x: Tensor, low: float = 0.0, high: float = 1.0) -> Tensor:
+    """ For x > 0, return smooth transition function which is 0 for x <= low and 1 for x >= high
+    """
+    x = (x - low) / (high - low)
+    x = x.clamp(min=0, max=1)
+    return x.pow(3) * (x * (x * 6 - 15) + 10)
+
+
+def expstep(x: Tensor, low: float = 0.0, high: float = 1.0) -> Tensor:
+    """ For x > 0, return smooth transition function which is 0 for x <= low and 1 for x >= high
+    """
+    x = (x - low) / (high - low)
+    x = x.clamp(min=1e-6, max=1-1e-6)
+    return (-1 / (1 - x.pow(2))).exp() / 0.36787944117144233
