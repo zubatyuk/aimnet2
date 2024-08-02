@@ -1,0 +1,10 @@
+pytorch >= 2.1
+opt_einsum
+click
+ignite >= 0.5
+numpy >= 1.2 
+omegaconf >= 2.0
+pyyaml
+jinja2
+h5py >= 3.0
+wandbn

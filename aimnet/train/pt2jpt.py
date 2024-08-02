@@ -3,6 +3,7 @@ from torch import nn, Tensor
 from aimnet.config import build_module, load_yaml
 from typing import Optional, Dict, List
 import click
+import os
 
 
 def set_eval(model: nn.Module) -> torch.nn.Module:
@@ -41,19 +42,21 @@ def mask_not_implemented_species(model: nn.Module, species: List[int]) -> nn.Mod
             weight[i, :] = torch.nan
     return model
 
+_default_aimnet2_config = os.path.join(os.path.dirname(__file__), '..', 'models', 'aimnet2.yaml')
+
 @click.command(short_help='Compile PyTorch model to TorchScript.')
-@click.argument('config', type=str)#, help='Path to the model YAML configuration file.')
-@click.argument('pt', type=str)#, help='Path to the input PyTorch weights file.')
-@click.argument('jpt', type=str)#, help='Path to the output TorchScript file.')
+@click.argument('pt', type=str) #, help='Path to the input PyTorch weights file.')
+@click.argument('jpt', type=str) #, help='Path to the output TorchScript file.')
+@click.option('--model', type=str, default=_default_aimnet2_config, help='Path to model definition YAML file')
 @click.option('--sae', type=str, default=None, help='Path to the energy shift YAML file.')
 @click.option('--species', type=str, default=None, help='Comma-separated list of parametrized atomic numbers.')
 @click.option('--fix-agh', is_flag=True, help='Fix the agh weights in the PyTorch model.')
 @click.option('--no-lr', is_flag=True, help='Do not add LR cutoff for model')
-def jitcompile(config, pt, jpt, sae, species, fix_agh, no_lr):
+def jitcompile(model, pt, jpt, sae, species, fix_agh, no_lr):
     """ Build model from YAML config, load weight from PT file and write JIT-compiled JPT file.
     Plus some modifications to work with aimnet2calc.
     """
-    model: nn.Module = build_module(config)
+    model: nn.Module = build_module(model)
     model = set_eval(model)
     if no_lr:
         cutoff_lr = None
