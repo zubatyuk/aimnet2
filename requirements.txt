@@ -7,4 +7,4 @@ omegaconf >= 2.0
 pyyaml
 jinja2
 h5py >= 3.0
-wandbn
+wandb
