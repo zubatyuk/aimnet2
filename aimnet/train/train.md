@@ -43,7 +43,7 @@ To actually training training, few pieces are needed:
 ``` $ aimnet calc_sae dataset.h5 dataset_sae.yaml```
 
 ### 3. Wandb logging
-Training script uses (Wandb)[https://wandb.ai/] logging. It is free for personal and academic use. To track train progress, either (wandb.ai)[wandb,ai] account is required,  or  a local Docker-based server launched with `wandb server`. By default, wandb is set to offline mode.
+Training script uses [Wandb](https://wandb.ai/) logging. It is free for personal and academic use. To track train progress, either (wandb.ai)[wandb,ai] account is required,  or  a local Docker-based server launched with `wandb server`. By default, wandb is set to offline mode.
 To setup online W&B account, use
 `$ wandb login`
 To set up W&B project and entity name, create extra configuration, save it to a file named, for example, `extra_conf.yaml` and pass it to `aimnet train` with `--config extra_conf.yaml`parameter.
