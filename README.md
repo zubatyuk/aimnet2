@@ -1,6 +1,6 @@
 # AIMNet2
 
-Models are compatible for use with (aimnet2calc)[https://github.com/isayevlab/AIMNet2]
+Models are compatible for use with [aimnet2calc](https://github.com/isayevlab/AIMNet2)
 
   
 ## Installation
@@ -11,7 +11,7 @@ conda create -n aimnet2 python=3.11
 conda activate aimnet
 ```  
 
-Install PyTorch with a proper CUDA version according to instructions at (pytorch.org)[https://pytorch.org]. E.g.
+Install PyTorch with a proper CUDA version according to instructions at [pytorch.org](https://pytorch.org). E.g.
 ```
 conda install pytorch pytorch-cuda=12.4 -c pytorch -c nvidia
 ```
