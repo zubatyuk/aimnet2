@@ -1,3 +1,4 @@
+# required to be set
 run_name: ???
 
 data:
@@ -13,11 +14,14 @@ data:
     # fraction of training data to use for validation is separate val file is not provided
     val_fraction: 0.1
     separate_val: true
+    # in DDP mode, will load only a shard of the dataset on each worker
+    ddp_load_full_dataset: false
 
     # data keys
     x: [coord, numbers, charge]
     y: [energy, forces, charges]
 
+    # dataset class definition
     datasets:
         train:
             class: aimnet.data.SizeGroupedDataset
@@ -26,22 +30,30 @@ data:
             class: aimnet.data.SizeGroupedDataset
             kwargs: {}
 
+    # sampler class definition
     samplers:
         train:
             class: aimnet.data.SizeGroupedSampler
             kwargs:
-                batch_size: 16384
-                batch_mode: atoms
+                # this value if for each of DDP worker, total batch size is `batch_size*world_size`
+                batch_size: 512
+                # could be set to 'atoms', than 'batch_size' could be around 16384
+                batch_mode: molecules
                 shuffle: True
-                batches_per_epoch: 1000
+                # for extra large datasets we want to do evaluation more often then onece per full epoch
+                # this value sets the size the epoch. `batches_per_epoch*batch_size` could be smaller or larger than the dataset size
+                batches_per_epoch: 10000
         val:
             class: aimnet.data.SizeGroupedSampler
             kwargs:
-                batch_size: 32768
-                batch_mode: atoms
+                batch_size: 1024
+                batch_mode: molecules
                 shuffle: False
+                # full dataset
                 batches_per_epoch: -1
 
+    # any additional torch.util.data.DataLoader options
+    # num_workers=0 and pin_memory=True are recommended
     loaders:
         train:
             num_workers: 0
@@ -50,7 +62,7 @@ data:
             num_workers: 0
             pin_memory: true
 
-
+# definition for loss function class. Modify if trainig on different targets
 loss:
   class: aimnet.train.loss.MTLoss
   kwargs:
@@ -80,26 +92,31 @@ optimizer:
     kwargs:
         lr: 0.0004
         weight_decay: 1e-8
+    # parameters with non-default optimizer settings
     param_groups:
         shifts:
             re: '.*.atomic_shift.shifts.weight$'
             weight_decay: 0.0
 
+# class definition for learning rate scheduler
 scheduler:
     class: ignite.handlers.param_scheduler.ReduceLROnPlateauScheduler
     kwargs:
         metric_name: loss
-        factor: 0.5
-        patience: 2
+        factor: 0.75
+        patience: 10
+    # terminate training if learning rate is lower than this value
+    # useful for ReduceLROnPlateauScheduler
     terminate_on_low_lr: 1.0e-5
 
 trainer:
+    # function that define trainig and validation loops
     trainer: aimnet.train.utils.default_trainer
     evaluator: aimnet.train.utils.default_evaluator
+    # total number of epochs to train
     epochs: 100
-    checkpoint:
-        n_saved: null
 
+# perdicaly save chechpoints, set to null to disable
 checkpoint:
     dirname: checkpoints
     filename_prefix: ${run_name}
@@ -107,18 +124,20 @@ checkpoint:
         n_saved: 1
         require_empty: False
 
+# wandb logger
 wandb:
     init: 
         name: ${run_name}
-        #entity: none
-        #project: none
-        #notes: none
+        mode: offline
+        entity: null
+        project: null
+        notes: null
     watch_model:
         log: all
         log_freq: 1000
         log_graph: true
 
-
+# standard set of metrics. Add an entry if training on different targets
 metrics:
     class: aimnet.train.metrics.RegMultiMetric
     kwargs:

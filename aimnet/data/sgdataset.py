@@ -428,8 +428,6 @@ class SizeGroupedDataset:
         self.x = x
         self.y = y or {}
 
-        loader_kwargs.update({'num_workers': 1, 'pin_memory': True})
-
         loader = DataLoader(self, batch_sampler=sampler, **loader_kwargs)
 
         def _squeeze(t):

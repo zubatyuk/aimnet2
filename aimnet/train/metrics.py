@@ -156,7 +156,7 @@ class RegMultiMetric(Metric):
             self.atoms = idist.all_reduce(self.atoms)
             self.samples = idist.all_reduce(self.samples)
             for k, loss in self.loss.items():
-                self.loss[k] = idist.all_reduce(self.loss)
+                self.loss[k] = idist.all_reduce(loss)
             for k1, v1 in self.data.items():
                 for k2, v2 in v1.items():
                     self.data[k1][k2] = idist.all_reduce(v2)

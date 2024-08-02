@@ -70,7 +70,7 @@ def train(config, model, load, save, args):
         logging.warning('No GPU available. Training will run on CPU. Use for testing only.')
     if num_gpus > 1:
         logging.info('Using DDP training.')
-        with idist.Parallel(backend='nccl') as parallel:
+        with idist.Parallel(backend='nccl', nproc_per_node=num_gpus) as parallel:
             parallel.run(run, model_cfg, train_cfg, load, save)
     else:
         run(0, model_cfg, train_cfg, load, save)

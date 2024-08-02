@@ -24,19 +24,10 @@ def enable_tf32(enable=True):
         torch.backends.cudnn.allow_tf32 = False
 
 
-def local_rank():
-    LOCAL_RANK = int(os.environ.get('LOCAL_RANK', '0'))
-    return LOCAL_RANK
-
-def world_size():
-    WORLD_SIZE = int(os.environ.get('WORLD_SIZE', '1'))
-    return WORLD_SIZE
-
-
 def make_seed(all_reduce=True):
     # create seed
     seed = int.from_bytes(os.urandom(2), 'big')
-    if all_reduce and world_size() > 1:
+    if all_reduce and idist.get_world_size() > 1:
         seed = idist.all_reduce(seed)
 
 
@@ -44,8 +35,8 @@ def load_dataset(cfg: omegaconf.DictConfig, kind='train'):
     # only load required subset of keys  
     keys = list(cfg.x) + list(cfg.y)
     # in DDP setting, will only load 1/WORLD_SIZE of the data
-    if world_size() > 1 and not cfg.ddp_load_full_dataset:
-        shard = (local_rank(), world_size())
+    if idist.get_world_size() > 1 and not cfg.ddp_load_full_dataset:
+        shard = (idist.get_local_rank(), idist.get_world_size())
     else:
         shard = None
     
@@ -254,6 +245,7 @@ def default_trainer(
         y_pred = model(x)
         loss = loss_fn(y_pred, y)['loss']
         loss.backward()
+        torch.nn.utils.clip_grad_value_(model.parameters(), 0.4)
         optimizer.step()
         return loss.item()
     return Engine(_update)
@@ -295,7 +287,7 @@ def build_engine(model, optimizer, scheduler, loss_fn, metrics, cfg, loader_val)
         logging.info(f'LR: {lr}')
     trainer.add_event_handler(Events.EPOCH_STARTED, log_lr)
     # write TQDM progress
-    if local_rank() == 0:
+    if idist.get_local_rank() == 0:
         pbar = ProgressBar()
         pbar.attach(trainer, event_name=Events.ITERATION_COMPLETED(every=100))
 
@@ -308,9 +300,11 @@ def build_engine(model, optimizer, scheduler, loss_fn, metrics, cfg, loader_val)
     # scheduler
     if scheduler is not None:
         validator.add_event_handler(Events.COMPLETED, scheduler)
+        terminator = TerminateOnLowLR(optimizer, cfg.scheduler.terminate_on_low_lr)
+        trainer.add_event_handler(Events.EPOCH_STARTED, terminator)
 
     # checkpoint after each epoch
-    if cfg.checkpoint is not None and local_rank() == 0:
+    if cfg.checkpoint is not None and idist.get_local_rank() == 0:
         kwargs = OmegaConf.to_container(cfg.checkpoint.kwargs)
         kwargs['global_step_transform'] = global_step_from_engine(trainer)
         kwargs['dirname'] = cfg.checkpoint.dirname
@@ -372,5 +366,3 @@ def setup_wandb(cfg, model_cfg, model, trainer, validator, optimizer):
 
     if cfg.wandb.watch_model is not None:
         wandb.watch(unwrap_module(model), **OmegaConf.to_container(cfg.wandb.watch_model, resolve=True))
-
-    
