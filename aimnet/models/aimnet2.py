@@ -1,6 +1,6 @@
 import torch
 from torch import nn, Tensor
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union, Sequence, Mapping
 from aimnet import ops, nbops
 from aimnet.aev import AEVSV, ConvSV
 from aimnet.modules import MLP, Embedding
@@ -49,9 +49,9 @@ class AIMNet2(AIMNet2Base):
                    nfeature_tot+num_charge_channels, n_out=aim_size, hidden=hidden[-1], **mlp_param))
         self.mlps = nn.ModuleList(mlps)
 
-        if isinstance(outputs, list):
+        if isinstance(outputs, Sequence):
             self.outputs = nn.ModuleList(outputs)
-        elif isinstance(outputs, dict):
+        elif isinstance(outputs, Mapping):
             self.outputs = nn.ModuleDict(outputs)
         else:
             raise TypeError('`outputs` is not either list or dict')

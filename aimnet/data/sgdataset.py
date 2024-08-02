@@ -11,18 +11,19 @@ import h5py
 
 
 class DataGroup:
-    def __init__(self, data: Union[str, Dict[str, np.ndarray]] = dict(), keys=None):
+    def __init__(self, data: Union[str, Dict[str, np.ndarray]] = dict(), keys=None, shard: Tuple[int, int] = None):
         self._data = dict()
+        s = slice(shard[0], None, shard[1]) if shard is not None else slice(None)
         if isinstance(data, str):
             assert os.path.isfile(data)
             data = np.load(data, mmap_mode='r')
             if keys is None:
                 keys = data.keys()
-            data = dict(item for item in data.items() if item[0] in keys)
+            data = dict((k, v[s]) for k, v in data.items() if k in keys)
         elif isinstance(data, h5py.Group):
             if keys is None:
                 keys = data.keys()
-            data = dict((k, v[()]) for k, v in data.items() if k in keys)
+            data = dict((k, v[s]) for k, v in data.items() if k in keys)
         _n = None
         for k, v in data.items():
             assert isinstance(k, str)
@@ -166,46 +167,47 @@ class DataGroup:
 
 
 class SizeGroupedDataset:
-    def __init__(self, data: Union[str, List[str], Dict[int, str], Dict[int, Dict[str, np.ndarray]], Dict[int, DataGroup], None] = None, keys=None):
+    def __init__(self, data: Union[str, List[str], Dict[int, str], Dict[int, Dict[str, np.ndarray]], Dict[int, DataGroup], None] = None,
+                 keys=None, shard=None):
         self._data = dict()
         self._meta = dict()
         if isinstance(data, str):
             if os.path.isdir(data):
-                self.load_datadir(data, keys=keys)
+                self.load_datadir(data, keys=keys, shard=shard)
             else:
-                self.load_h5(data, keys=keys)
+                self.load_h5(data, keys=keys, shard=shard)
         elif isinstance(data, (list, tuple)):
-            self.load_files(data)
+            self.load_files(data, shard=shard)
         elif isinstance(data, dict):
             self.load_dict(data)
         self.loader_mode = False
         self.x = {}
         self.y = {}
 
-    def load_datadir(self, path, keys=None):
+    def load_datadir(self, path, keys=None, shard: Tuple[int, int] = None):
         if not os.path.isdir(path):
             raise FileNotFoundError(
                 f'{path} does not exist or not a directory.')
         for f in glob(os.path.join(path, '???.npz')):
             k = int(os.path.basename(f)[:3])
-            self[k] = DataGroup(f, keys=keys)
+            self[k] = DataGroup(f, keys=keys, shard=shard)
 
-    def load_files(self, files, keys=None):
+    def load_files(self, files, keys=None,  shard: Tuple[int, int] = None):
         for fil in files:
             if not os.path.isfile(fil):
                 raise FileNotFoundError(f'{fil} does not exist or not a file.')
             k = int(os.path.splitext(os.path.basename(fil))[0])
-            self[k] = DataGroup(fil, keys=keys)
+            self[k] = DataGroup(fil, keys=keys, shard=shard)
 
     def load_dict(self, data, keys=None):
         for k, v in data.items():
             self[k] = DataGroup(v, keys=keys)
 
-    def load_h5(self, data, keys=None):
+    def load_h5(self, data, keys=None, shard: Tuple[int, int] = None):
         with h5py.File(data, 'r') as f:
             for k, g in f.items():
                 k = int(k)
-                self[k] = DataGroup(g, keys=keys)
+                self[k] = DataGroup(g, keys=keys, shard=shard)
             self._meta = dict(f.attrs)
 
     def keys(self):
@@ -253,10 +255,6 @@ class SizeGroupedDataset:
 
     def __contains__(self, value):
         return value in self.keys()
-
-    @classmethod
-    def from_h5(cls, h5file):
-        pass
 
     def rename_datakey(self, old, new):
         for g in self.groups:
@@ -425,19 +423,14 @@ class SizeGroupedDataset:
         for g in self.values():
             yield from g.iter_batched(batch_size, keys)
 
-    def get_loader(self, x, y=None, batch_size=32, shuffle=True,
-                   num_workers=0, pin_memory=False, rank=0, world_size=1, seed=42):
-        group_sizes = dict((k, len(v)) for k, v in self.items())
-        batch_sizes = dict((k, batch_size) for k, v in self.items())
-
+    def get_loader(self, sampler, x, y=None, **loader_kwargs):
         self.loader_mode = True
         self.x = x
         self.y = y or {}
 
-        sampler = SizeGrouppedSampler(
-            group_sizes, batch_sizes=batch_sizes, shuffle=shuffle, rank=rank, world_size=world_size, seed=seed)
-        loader = DataLoader(self, batch_sampler=sampler,
-                            num_workers=num_workers, pin_memory=pin_memory)
+        loader_kwargs.update({'num_workers': 1, 'pin_memory': True})
+
+        loader = DataLoader(self, batch_sampler=sampler, **loader_kwargs)
 
         def _squeeze(t):
             for d in t:
@@ -448,156 +441,54 @@ class SizeGroupedDataset:
         loader.collate_fn = lambda x: _squeeze(default_collate(x))
         return loader
 
-    def weighted_loader(self, x, y=None, batch_size=32, num_batches=None, num_workers=0, pin_memory=False, seed=42):
-        num_batches = num_batches or int(len(self) / batch_size)
-        self.loader_mode = True
-        self.x = x
-        self.y = y or {}
-        
-        if 'sample_idx' not in x:
-            x.append('sample_idx')
 
-        sampler = RandomWeightedSampler(ds=self, batch_size=batch_size, num_batches=num_batches, seed=seed)
-        loader = DataLoader(self, batch_sampler=sampler,
-                            num_workers=num_workers, pin_memory=pin_memory)
-        def _squeeze(t):
-            for d in t:
-                for v in d.values():
-                    v.squeeze_(0)
-            return t
-
-        loader.collate_fn = lambda x: _squeeze(default_collate(x))
-        return loader
-
-
-class SizeGrouppedSampler:
-    def __init__(self, group_sizes, batch_sizes, shuffle=False, rank=0, world_size=1, seed=None):
-        self.group_sizes = group_sizes
-        self.batch_sizes = batch_sizes
+class SizeGroupedSampler:
+    def __init__(self, ds: SizeGroupedDataset, batch_size: int, batch_mode='molecules',
+                 shuffle=False, batches_per_epoch=-1):
+        self.ds = ds
+        self.batch_size = batch_size
+        assert batch_mode in ['molecules', 'atoms'], f'Unknown batch_mode {batch_mode}'
+        self.batch_mode = batch_mode
         self.shuffle = shuffle
-        self.rank = rank
-        self.world_size = world_size
-        self._size = sum(self._get_num_batches_for_group(N)
-                         for N in self.group_sizes)
-        self.epoch = 0
-        self.seed = seed
+        self.batches_per_epoch = batches_per_epoch
 
     def __len__(self):
-        return self._size
-
+        if self.batches_per_epoch > 0:
+            return self.batches_per_epoch
+        else:
+            return sum(self._get_num_batches_for_group(g) for g in self.ds.groups)
+        
     def __iter__(self):
         return iter(self._samples_list())
-
-    def _get_num_batches_for_group(self, N):
-        return int(np.ceil(self.group_sizes[N] / self.batch_sizes[N] / self.world_size))
+    
+    def _get_num_batches_for_group(self, g):
+        if self.batch_mode == 'molecules':
+            return int(np.ceil(len(g) / self.batch_size))
+        elif self.batch_mode == 'atoms':
+            return int(np.ceil(len(g) * g['numbers'].shape[1] / self.batch_size))
+        else:
+            raise ValueError(f'Unknown batch_mode: {self.batch_mode}')
 
     def _samples_list(self):
-        self.epoch += 1
-        seed = self.epoch + self.seed
         samples = list()
-        for N, n in self.group_sizes.items():
+        for group_key, g in self.ds.items():
+            n = len(g)
             if n == 0:
                 continue
             idx = np.arange(n)
             if self.shuffle:
-                np.random.seed(seed + 1234)
                 np.random.shuffle(idx)
-            idx = idx[self.rank:n:self.world_size]
-            n_batches = self._get_num_batches_for_group(N)
-            samples.extend(((N, i),) for i in np.array_split(idx, n_batches))
+            n_batches = self._get_num_batches_for_group(g)
+            samples.extend(((group_key, idx_batch),) for idx_batch in np.array_split(idx, n_batches))
         if self.shuffle:
-            np.random.seed(seed + 4321)
             np.random.shuffle(samples)
+        if self.batches_per_epoch:
+            if len(samples) > self.batches_per_epoch:
+                samples = samples[:self.batches_per_epoch]
+            else:
+                # add some random duplicates
+                idx = np.arange(len(samples))
+                np.random.shuffle(idx)
+                n = self.batches_per_epoch - len(samples)
+                samples.extend([samples[i] for i in np.random.choice(idx, n, replace=True)])
         return samples
-
-
-class RandomWeightedSampler:
-    def __init__(self, ds, batch_size, num_batches, seed=None, uniform=False, peratom_batches=False):
-        self.ds = ds
-        self.batch_size = batch_size
-        self.num_batches = num_batches
-        self.peratom_batches = peratom_batches
-        self.epoch = 0
-        self.seed = seed or np.random.randint(1000000)
-        self.uniform = uniform
-        if 'sample_weight' not in ds.datakeys():
-            for g in ds.groups:
-                g['sample_weight'] = np.full(len(g), 1.0)
-        if 'sample_idx' not in ds.datakeys():
-            for g in ds.groups:
-                g['sample_idx'] = np.arange(len(g))
-        for g in ds.groups:
-            g['sample_weight_upd'] = np.full(len(g), 0.0)
-            g['sample_weight_upd_mask'] = np.full(len(g), False)
-    
-    def __len__(self):
-        return self.num_batches
-
-    def __iter__(self):
-        self._count = 0
-        self.epoch += 1
-        seed = self.epoch + self.seed
-        np.random.seed(seed)
-        if self.uniform:
-            self._prepare_weights_uniform()
-        else:
-            self._prepare_weights()
-        return self
-
-    def __next__(self):
-        if self._count == self.num_batches:
-            raise StopIteration
-            
-        #g = np.random.choice(self._groups, replace=False, p=self._group_weights)
-        selection = np.random.choice(np.arange(len(self._groups)), replace=False, p=self._group_weights)
-        g = self._groups[selection]
-        
-        #  oops. assume ds has coord
-        _n = g['coord'].shape[1]
-        if self.peratom_batches:
-            size = min(len(g), self.batch_size / _n)
-        else:
-            size = min(len(g), self.batch_size)
-        idx = np.random.choice(len(g), size=min(len(g), self.batch_size), replace=False, p=g['_p'])
-        self._count += 1
-        return ((_n, idx),)
-
-    def _prepare_weights_uniform(self):
-        self._groups = self.ds.groups
-        self._group_weights = np.array([len(g) for g in self._groups])
-        self._group_weights /= self._group_weights.sum()
-        for g in self._groups:
-            g['_p'] = 1 / len(g)
-
-    def _prepare_weights(self):
-        self._groups = self.ds.groups
-        # update sample weights
-        if 'sample_weight_upd' in self.ds.datakeys():
-            _u = np.concatenate([g['sample_weight_upd'] for g in self._groups])
-            w = np.concatenate([g['sample_weight_upd_mask'] for g in self._groups])
-            if w.any():
-                _mean_weight = np.concatenate([g['sample_weight_upd'] for g in self._groups])[w].mean()
-                _a = 0.005 * _mean_weight
-                for g in self._groups:
-                    _u = g['sample_weight_upd']
-                    w = g['sample_weight_upd_mask'] 
-                    if w.any():
-                        w_inc = w & (_u > g['sample_weight'])
-                        g['sample_weight'][w_inc] = _u[w_inc]
-                        w_dec = w & (_u < g['sample_weight'])
-                        g['sample_weight'][w_dec] = g['sample_weight'][w_dec] * 0.8 + _u[w_dec] * 0.2
-
-#                        _u = _u[w]
-#                        _u *= np.exp(- (_u / _mean_weight) ** 2 / 20)
-#                        g['sample_weight'][w] = _u
-#                    g['sample_weight'][~w] += _a
-
-            for g in self._groups:
-                g['sample_weight_upd_mask'] = np.full(len(g), False) 
-
-        # get group weights
-        self._group_weights = np.array([g['sample_weight'].sum() for g in self._groups])
-        self._group_weights /= self._group_weights.sum()
-        for g in self._groups:
-            _w = g['sample_weight']
-            g['_p'] = _w / _w.sum()

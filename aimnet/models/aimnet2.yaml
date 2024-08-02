@@ -15,7 +15,7 @@ kwargs:
       energy_mlp:
         class: aimnet.modules.Output
         kwargs:
-          n_in: 256 
+          n_in: 256
           n_out: 1
           key_in: 'aim'
           key_out: 'energy'
@@ -36,35 +36,8 @@ kwargs:
           key_in: 'energy'
           key_out: 'energy'
 
-      shortrange:
-        class: aimnet.modules.SRRep
-        kwargs:
-          key_out: 'energy'
-          reduce_sum: true
-          cutoff_fn: exp_cutoff
-          rc: 2.0
-
       lrcoulomb:
         class: aimnet.modules.LRCoulomb
         kwargs:
           key_in: 'charges'
-          key_out: 'energy'          
-
-      disp_mlp:
-        class: aimnet.modules.Output
-        kwargs:
-          n_in: 256
-          n_out: 2
-          key_in: 'aim'
-          key_out: 'disp_param'
-          mlp:
-            activation_fn: torch.nn.GELU
-            bias: true
-            last_linear: true
-            hidden: [128, 64]
-
-      disp_transform:
-        class: aimnet.modules.DispParam
-        kwargs:
-          ref: d3
-
+          key_out: 'energy'

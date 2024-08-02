@@ -1,0 +1,151 @@
+run_name: ???
+
+data:
+    # path to train and validation datasets
+    train: ???
+    val: null  # same data file by default
+    # sae files
+    sae:
+        energy:
+            file: '???'
+            mode: linreg
+
+    # fraction of training data to use for validation is separate val file is not provided
+    val_fraction: 0.1
+    separate_val: true
+
+    # data keys
+    x: [coord, numbers, charge]
+    y: [energy, forces, charges]
+
+    datasets:
+        train:
+            class: aimnet.data.SizeGroupedDataset
+            kwargs: {}
+        val:
+            class: aimnet.data.SizeGroupedDataset
+            kwargs: {}
+
+    samplers:
+        train:
+            class: aimnet.data.SizeGroupedSampler
+            kwargs:
+                batch_size: 16384
+                batch_mode: atoms
+                shuffle: True
+                batches_per_epoch: 1000
+        val:
+            class: aimnet.data.SizeGroupedSampler
+            kwargs:
+                batch_size: 32768
+                batch_mode: atoms
+                shuffle: False
+                batches_per_epoch: -1
+
+    loaders:
+        train:
+            num_workers: 0
+            pin_memory: true
+        val:
+            num_workers: 0
+            pin_memory: true
+
+
+loss:
+  class: aimnet.train.loss.MTLoss
+  kwargs:
+    components:
+        energy:
+            fn: aimnet.train.loss.energy_loss_fn
+            weight: 1.0
+        forces:
+            fn: aimnet.train.loss.peratom_loss_fn
+            weight: 0.2
+            kwargs:
+                key_true: forces
+                key_pred: forces
+        charges:
+            fn: aimnet.train.loss.peratom_loss_fn
+            weight: 0.05
+            kwargs:
+                key_true: charges
+                key_pred: charges
+
+optimizer:
+    # lists of regular expressions for parameter names to enable or disable gradients
+    # force_no_grad will be processed first
+    force_no_train: []
+    force_train: []
+    class: torch.optim.RAdam
+    kwargs:
+        lr: 0.0004
+        weight_decay: 1e-8
+    param_groups:
+        shifts:
+            re: '.*.atomic_shift.shifts.weight$'
+            weight_decay: 0.0
+
+scheduler:
+    class: ignite.handlers.param_scheduler.ReduceLROnPlateauScheduler
+    kwargs:
+        metric_name: loss
+        factor: 0.5
+        patience: 2
+    terminate_on_low_lr: 1.0e-5
+
+trainer:
+    trainer: aimnet.train.utils.default_trainer
+    evaluator: aimnet.train.utils.default_evaluator
+    epochs: 100
+    checkpoint:
+        n_saved: null
+
+checkpoint:
+    dirname: checkpoints
+    filename_prefix: ${run_name}
+    kwargs:
+        n_saved: 1
+        require_empty: False
+
+wandb:
+    init: 
+        name: ${run_name}
+        #entity: none
+        #project: none
+        #notes: none
+    watch_model:
+        log: all
+        log_freq: 1000
+        log_graph: true
+
+
+metrics:
+    class: aimnet.train.metrics.RegMultiMetric
+    kwargs:
+        cfg:
+            energy:
+                abbr: E
+                scale: 23.06  # eV to kcal/mol
+            dipole:
+                abbr: D
+                scale: 1.0
+                mult: 3
+            quadrupole:
+                abbr: Q
+                scale: 1.0
+                mult: 6
+            charges:
+                abbr: q
+                peratom: True
+            volumes:
+                abbr: V
+                peratom: True
+            forces:
+                abbr: F
+                peratom: True
+                mult: 3
+                scale: 23.06
+
+
+
+

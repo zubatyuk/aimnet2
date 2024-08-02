@@ -31,12 +31,14 @@ def calc_masks(data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         ).unsqueeze(0)
         if data["mask_i"].any():
             data["_input_padded"] = torch.tensor(True)
+            data["_natom"] = data['mask_i'].logical_not().sum(-1)
             data["mol_sizes"] = (~data["mask_i"]).sum(-1)
             data["mask_ij"] = data["mask_ij"] | (
                 data["mask_i"].unsqueeze(-2) + data["mask_i"].unsqueeze(-1)
             )
         else:
             data["_input_padded"] = torch.tensor(False)
+            data["_natom"] = torch.tensor(data['numbers'].shape[1], device=data['numbers'].device)
             data["mol_sizes"] = torch.tensor(
                 data["numbers"].shape[1], device=data["numbers"].device
             )

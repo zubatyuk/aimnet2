@@ -1,1 +1,1 @@
-from .sgdataset import DataGroup, SizeGroupedDataset
+from .sgdataset import DataGroup, SizeGroupedDataset, SizeGroupedSampler

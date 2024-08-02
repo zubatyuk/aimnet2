@@ -1,3 +1,4 @@
+from ignite.engine import Engine
 import torch
 from torch import Tensor
 import numpy as np
@@ -106,7 +107,7 @@ class RegMultiMetric(Metric):
         self.data = defaultdict(lambda: defaultdict(float))
         self.atoms = 0.0
         self.samples = 0.0
-        self.loss = 0.0
+        self.loss = defaultdict(float)
 
     def _update_one(self, key: str, pred: Tensor, true: Tensor) -> None:
         e = true - pred
@@ -138,22 +139,14 @@ class RegMultiMetric(Metric):
             self.atoms += _n.sum().item()
         else:
             self.atoms += y_pred['numbers'].shape[0] * y_pred['numbers'].shape[1]
-        
-#        if '_natom' in y_pred:
-#            if y_pred['_natom'].numel() == 1 and y_pred['_natom'].item() != 0:
-#                self.atoms += y_pred['_natom'].item()
-#            else:
-#                self.atoms += y_pred['_natom'].sum().item()
-#        else:
-#            self.atoms += y_pred['numbers'].shape[0] * y_pred['numbers'].shape[1]
-
         if self.loss_fn is not None:
             with torch.no_grad():
-                loss = self.loss_fn(y_pred, y_true)
-                if loss.numel() > 1:
-                    loss = loss.mean()
-                loss = loss.item()
-                self.loss += loss * b
+                loss_d = self.loss_fn(y_pred, y_true)
+                for k, loss in loss_d.items():
+                    if loss.numel() > 1:
+                        loss = loss.mean()
+                    loss = loss.item()
+                    self.loss[k] += loss * b
 
     def compute(self):
         if self.samples == 0:
@@ -162,7 +155,8 @@ class RegMultiMetric(Metric):
         if idist.get_world_size() > 1:
             self.atoms = idist.all_reduce(self.atoms)
             self.samples = idist.all_reduce(self.samples)
-            self.loss = idist.all_reduce(self.loss)
+            for k, loss in self.loss.items():
+                self.loss[k] = idist.all_reduce(self.loss)
             for k1, v1 in self.data.items():
                 for k2, v2 in v1.items():
                     self.data[k1][k2] = idist.all_reduce(v2)
@@ -192,10 +186,13 @@ class RegMultiMetric(Metric):
                         ret[f'{abbr}_{k}_{ii}'] = vv
                 else:
                     ret[f'{abbr}_{k}'] = v
-        if self.loss:
-            ret['loss'] = self.loss / self.samples
+        if len(self.loss):
+            for k, loss in self.loss.items():
+                if not k.endswith('loss'):
+                    k = k + '_loss'
+                ret[k] = loss / self.samples
 
         logging.info(str(ret))
 
         return ret
-
+    
