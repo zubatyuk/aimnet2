@@ -143,8 +143,9 @@ class RegMultiMetric(Metric):
             with torch.no_grad():
                 loss_d = self.loss_fn(y_pred, y_true)
                 for k, loss in loss_d.items():
-                    if loss.numel() > 1:
-                        loss = loss.mean()
+                    if isinstance(loss, Tensor):
+                        if loss.numel() > 1:
+                            loss = loss.mean()
                     loss = loss.item()
                     self.loss[k] += loss * b
 
