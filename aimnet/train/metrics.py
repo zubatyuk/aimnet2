@@ -146,7 +146,7 @@ class RegMultiMetric(Metric):
                     if isinstance(loss, Tensor):
                         if loss.numel() > 1:
                             loss = loss.mean()
-                    loss = loss.item()
+                        loss = loss.item()
                     self.loss[k] += loss * b
 
     def compute(self):
