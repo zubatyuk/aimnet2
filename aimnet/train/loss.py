@@ -12,10 +12,6 @@ class MTLoss:
     The weights are normalized to sum to 1. The loss functions are applied to the predictions and 
     true values, and the weighted sum of the losses is computed.
 
-    Attributes:
-        weights (Tensor): Normalized weights for each loss function.
-        functions (List[Dict]): List of infividual loss functions definitions.
-        
     Loss functions definition must contain keys:
         name (str): The name of the loss function.
         fn (str): The loss function (e.g. `aimnet2.train.loss.mse_loss_fn`).
@@ -48,7 +44,61 @@ class MTLoss:
         # special name for the total loss
         loss['loss'] = sum(loss.values())
         return loss
+    
 
+class MTAdaWLoss:
+    """ Multi-target loss function with adaptive weights.
+
+    This class allows for the combination of multiple loss functions, each with a specified weight.
+    Scales of of the weights are adapted based on the loss values to match specified target weight.
+    The scale of the first component is fixed and the scale of the other components are adjusted accordingly.
+    The loss functions are applied to the predictions and true values, and the weighted sum of the losses is computed.
+
+    Loss functions definition must contain keys:
+        name (str): The name of the loss function.
+        fn (str): The loss function (e.g. `aimnet2.train.loss.mse_loss_fn`).
+        weight (float): The weight of the loss function.
+        scale (float): The initial scale of the loss function.
+        kwargs (Dict): Optional, additional keyword arguments for the loss function.
+
+    Methods:
+        __call__(y_pred, y_true):
+            Computes the weighted sum of the losses from the individual loss functions.
+            Args:
+                y_pred (Dict[str, Tensor]): Predicted values.
+                y_true (Dict[str, Tensor]): True values.
+            Returns:
+                Dict[str, Tensor]: total loss under key 'loss' and values for individual components.
+    """
+
+    def __init__(self, components: Dict[str, Any], eta=0.001):
+        self.eta = eta
+        s = sum(c['weight'] for c in components.values())
+        self.components = dict()
+        for name, c in components.items():
+            kwargs = c.get('kwargs', dict())
+            fn = partial(get_module(c['fn']), **kwargs)
+            self.components[name] = [fn, c['weight'] / s, c['scale']]
+
+    def __call__(self, y_pred: Dict[str, Tensor], y_true: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        loss = dict()
+        for name, (fn, w, s) in self.components.items():
+            l = fn(y_pred=y_pred, y_true=y_true)
+            loss[name] = l * s
+            loss[f'{name}_scale'] = s
+        # special name for the total loss
+        loss['loss'] = sum(loss[k] for k in self.components)
+        # update weights
+        l = loss['loss'].item()
+        for i, (name, (fn, w, s)) in enumerate(self.components.items()):
+            if i == 0:
+                continue
+            if (loss[name].item() / l) > w:
+                mult = 1.0 - self.eta
+            else:
+                mult = 1.0 + self.eta
+            self.components[name][2] *= mult
+        return loss
 
 def mse_loss_fn(y_pred: Dict[str, Tensor], y_true: Dict[str, Tensor], key_pred: str, key_true: str) -> Tensor:
     """ General MSE loss function
@@ -65,12 +115,15 @@ def peratom_loss_fn(y_pred: Dict[str, Tensor], y_true: Dict[str, Tensor], key_pr
     """
     x = y_true[key_true]
     y = y_pred[key_pred]
-    l = torch.nn.functional.mse_loss(x, y)
 
-    if '_natom' in y_pred and y_pred['_natom'].numel() > 1:
-        l = l * _natom_scaling(y_pred)
-
+    if y_pred['_natom'].numel() == 1:
+        l = torch.nn.functional.mse_loss(x, y)
+    else:
+        diff2 = (x - y).pow(2).view(x.shape[0], -1)
+        dim = diff2.shape[-1]
+        l = (diff2 * (y_pred['_natom'].unsqueeze(-1) / dim)).mean()
     return l
+
 
 def energy_loss_fn(y_pred: Dict[str, Tensor], y_true: Dict[str, Tensor], key_pred: str = 'energy', key_true: str = 'energy') -> Tensor:
     """MSE loss normalized by the number of atoms.
@@ -84,55 +137,43 @@ def energy_loss_fn(y_pred: Dict[str, Tensor], y_true: Dict[str, Tensor], key_pre
         l = torch.nn.functional.mse_loss(x, y) / s
     return l
 
-def fuzzy_charges_loss_fn(y_pred: Dict[str, Tensor], y_true: Dict[str, Tensor], key_pred: str = 'charges', key_true: str = 'charges', eta=1.0) -> Tensor:
+
+def dipole_loss_fn(y_pred: Dict[str, Tensor], y_true: Dict[str, Tensor], key_pred: str = 'charges', key_true: str = 'dipole') -> Tensor:
     x = y_true[key_true]
-    y = y_pred[key_pred]
-    d_ij = y_pred['d_ij'].clamp(max=6.0)
-    with torch.no_grad():
-        w = torch.exp(- eta * d_ij.pow(2))
-        w /= w.sum(-1, keepdim=True).clamp(min=1e-6)
-    x = (x.unsqueeze(-2) * w).sum(-1)
-    y = (y.unsqueeze(-2) * w).sum(-1)
+    # calculate dipole
+    # detach coord, gradiant flows only to charges
+    c = y_pred['coord'].detach()
+    q = y_pred[key_pred]
+    y = (c * q.unsqueeze(-1)).sum(-2)
+    # in-place update y_pred for metrics
+    y_pred[key_true] = y
 
-    l = torch.nn.functional.mse_loss(x, y)
-
-    if '_natom' in y_pred and y_pred['_natom'].numel() > 1:
-        l = l * _natom_scaling(y_pred)
-
-    return l
-
-def dipole_charge_loss_fn(y_pred: Dict[str, Tensor], y_true: Dict[str, Tensor], key_pred: str = 'dipole', key_true: str = 'dipole', correct_for_extent=True) -> Tensor:
-    x = y_true[key_true]
-    y = y_pred[key_pred]
-    if correct_for_extent:
-        spatial_extent = y_pred['coord'].detach().pow(2).sum(-2)
-        l = ((x - y).pow(2) / spatial_extent.clamp(min=1e-3)).mean()
-    else:
+    if y_pred['_natom'].numel() == 1:
         l = torch.nn.functional.mse_loss(x, y)
-
-    if '_natom' in y_pred and y_pred['_natom'].numel() > 1:
-        l = l * _natom_scaling(y_pred)
-
-    return l
-
-
-def quadrupole_charge_loss_fn(y_pred: Dict[str, Tensor], y_true: Dict[str, Tensor], key_pred: str = 'quadrupole', key_true: str = 'quadrupole', correct_for_extent=True) -> Tensor:
-    x = y_true[key_true]
-    y = y_pred[key_pred]
-    if correct_for_extent:
-        coord = y_pred['coord'].detach()
-        spatial_extent2 = torch.cat([coord.pow(2), coord * coord.roll(1, -1)], dim=-1).pow(2).sum(-2)
-        l = ((x - y).pow(2) / spatial_extent2.clamp(min=1e-3)).mean()
     else:
-        l = torch.nn.functional.mse_loss(x, y)
-
-    if '_natom' in y_pred and y_pred['_natom'].numel() > 1:
-        l = l * _natom_scaling(y_pred)
-
+        diff2 = (x - y).pow(2).view(x.shape[0], -1)
+        dim = diff2.shape[-1]
+        l = (diff2 * (y_pred['_natom'].unsqueeze(-1) / dim)).mean()
     return l
 
-def _natom_scaling(y_pred: Dict[str, Tensor]) -> float:
-    """MSE loss normalization 
-    """
-    factor = y_pred['numbers'].numel() / y_pred['_natom'].sum().item()
-    return factor
+
+def quadrupole_loss_fn(y_pred: Dict[str, Tensor], y_true: Dict[str, Tensor], key_pred: str = 'charges', key_true: str = 'quadrupole') -> Tensor:
+    x = y_true[key_true]
+    # calculate quadrupole
+    # detach coord, gradiant flows only to charges
+    c = y_pred['coord'].detach()
+    q = y_pred[key_pred]
+    quad_ii = (c.pow(2) * q.unsqueeze(-1)).sum(-2)
+    quad_ii = quad_ii - quad_ii.mean(dim=-1, keepdim=True)
+    quad_ij = (c * c.roll(-1, -1) * q.unsqueeze(-1)).sum(-2)
+    y = torch.cat([quad_ii, quad_ij], dim=-1)
+    # in-place update y_pred for metrics
+    y_pred[key_true] = y
+
+    if y_pred['_natom'].numel() == 1:
+        l = torch.nn.functional.mse_loss(x, y)
+    else:
+        diff2 = (x - y).pow(2).view(x.shape[0], -1)
+        dim = diff2.shape[-1]
+        l = (diff2 * (y_pred['_natom'].unsqueeze(-1) / dim)).mean()
+    return l
