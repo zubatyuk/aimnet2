@@ -29,6 +29,11 @@ class AIMNet2Base(nn.Module):
         data = self._prepare_dtype(data)
         data = nbops.set_nb_mode(data)
         data = nbops.calc_masks(data)
+
+        assert data['charge'].ndim == 1, "Charge should be 1D tensor"
+        if 'mult' in data:
+            assert data['mult'].ndim == 1, "Mult should be 1D tensor"
+        
         return data
     
 

@@ -13,6 +13,9 @@ class AIMNet2(AIMNet2Base):
                  num_charge_channels: int = 1):
         super().__init__()
 
+        assert num_charge_channels in [1, 2], "num_charge_channels must be 1 (closed shell) or 2 (NSE for open-shell)."
+        self.num_charge_channels = num_charge_channels
+
         self.aev = AEVSV(**aev)
         nshifts_s = aev['nshifts_s']
         nshifts_v = aev.get('nshitfs_v') or nshifts_s
@@ -35,7 +38,7 @@ class AIMNet2(AIMNet2Base):
         conv_param = dict(nshifts_s=nshifts_s, nshifts_v=nshifts_v,
                           ncomb_v=ncomb_v, do_vector=True)
         self.conv_a = ConvSV(nchannel=nfeature, d2features=d2features, **conv_param)
-        self.conv_q = ConvSV(nchannel=1, d2features=False, **conv_param)
+        self.conv_q = ConvSV(nchannel=num_charge_channels, d2features=False, **conv_param)
 
         mlp_param = {'activation_fn': nn.GELU(), 'last_linear': True}
         mlps = [MLP(n_in=self.conv_a.output_size() + nfeature_tot,
@@ -56,6 +59,19 @@ class AIMNet2(AIMNet2Base):
         else:
             raise TypeError('`outputs` is not either list or dict')
         
+    def _preprocess_spin_polarized_charge(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        assert 'mult' in data, "'mult' key is required for NSE if two channels for charge are not provided"
+        _half_spin = 0.5 * (data['mult'] - 1.0)
+        _half_q = 0.5 * data['charge']
+        data['charge'] = torch.stack([_half_q + _half_spin, _half_q - _half_spin], dim=-1)
+        return data
+
+    def _postprocess_spin_polarized_charge(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        data['spin_charges'] = data['charges'][..., 0] - data['charges'][..., 1]
+        data['charges'] = data['charges'].sum(dim=-1)
+        data['charge'] = data['charge'].sum(dim=-1)
+        return data
+        
     def _prepare_in_a(self, data: Dict[str, Tensor]) -> Tensor:
             a_i, a_j = nbops.get_ij(data['a'], data)
             if self.d2features:
@@ -74,7 +90,9 @@ class AIMNet2(AIMNet2Base):
         return _in
     
     def _update_q(self, data: Dict[str, Tensor], x: Tensor, delta_q: bool = True) -> Dict[str, Tensor]:
-        _q, _f, delta_a = x.split([1, 1, x.shape[-1] - 2], dim=-1)
+        _q, _f, delta_a = x.split([self.num_charge_channels, self.num_charge_channels, x.shape[-1] - 2*self.num_charge_channels], dim=-1)
+        # for loss
+        data['_delta_Q'] = data['charge'] - nbops.mol_sum(_q, data)
         if delta_q:
             q = data['charges'] + _q
         else:
@@ -95,9 +113,11 @@ class AIMNet2(AIMNet2Base):
             a = a.unflatten(-1, (self.nfeature, self.nshifts_s))
         data['a'] = a
 
-        # make sure that charge has channel dimension
-        while data['charge'].ndim < 2:
-            data['charge'] = data['charge'].unsqueeze(-1)
+        # NSE case
+        if self.num_charge_channels == 2:
+            data = self._preprocess_spin_polarized_charge(data)
+        else:
+            data['charge'] = data['charge'].unsqueeze(-1)  # make sure that charge has channel dimension
 
         # AEV
         data = self.aev(data)
@@ -122,17 +142,14 @@ class AIMNet2(AIMNet2Base):
                 data['aim'] = _out
 
         # squeeze charges
-        data['charge'] = data['charge'].squeeze(-1)
-        data['charges'] = data['charges'].squeeze(-1)                
+        if self.num_charge_channels == 2:
+            data = self._postprocess_spin_polarized_charge(data)
+        else:
+            data['charges'] = data['charges'].squeeze(-1)
+            data['charge'] = data['charge'].squeeze(-1)            
 
         # readout
         for m in self.outputs.children():
             data = m(data)
 
         return data
-
-
-
-
-
-    
