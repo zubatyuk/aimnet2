@@ -62,7 +62,7 @@ def exp_expand(d_ij: Tensor, shifts: Tensor, eta: float) -> Tensor:
 
 def nse(Q: Tensor, q_u: Tensor, f_u: Tensor, data: Dict[str, Tensor]) -> Tensor:
     # Q and q_u and f_u must have last dimension size 1 or 2
-    F_u = nbops.mol_sum(f_u, data)
+    F_u = nbops.mol_sum(f_u, data) + 1e-6
     Q_u = nbops.mol_sum(q_u, data)
     dQ = Q - Q_u
     # for loss
