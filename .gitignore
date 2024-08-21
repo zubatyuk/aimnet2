@@ -2,3 +2,4 @@
 .fleet
 .history
 __pycache__
+.vscode
