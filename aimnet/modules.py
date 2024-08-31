@@ -14,7 +14,7 @@ def MLP(n_in: int, n_out: int,
         weight_init_fn: Union[Callable, str] = 'torch.nn.init.xavier_normal_',
         bias: bool = True, last_linear: bool = True
         ):
-    """ Convenienvce function to build MLP from config
+    """ Convenience function to build MLP from config
     """
     # hp search hack
     hidden = [x for x in hidden if x > 0]
@@ -101,10 +101,7 @@ class AtomicShift(nn.Module):
     def __init__(self, key_in: str, key_out: str, num_types: int = 64,
                  dtype: torch.dtype = torch.float, requires_grad: bool = True, reduce_sum=False):
         super().__init__()
-        shifts = nn.Embedding(num_types, 1, padding_idx=0)
-        with torch.no_grad():
-            shifts.weight = shifts.weight.to(dtype)
-            nn.init.zeros_(shifts.weight)
+        shifts = nn.Embedding(num_types, 1, padding_idx=0, dtype=dtype)
         shifts.weight.requires_grad_(requires_grad)
         self.shifts = shifts
         self.key_in = key_in
