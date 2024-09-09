@@ -14,7 +14,7 @@ _default_model = os.path.join(os.path.dirname(__file__), '..', 'models', 'aimnet
 _default_config = os.path.join(os.path.dirname(__file__), 'default_train.yaml')
 
 @click.command()
-@click.option('--config', type=click.Path(exists=True), default=None,
+@click.option('--config', type=click.Path(exists=True), default=None, multiple=True,
     help='Path to the extra configuration file (overrides values the default config).'
     )
 @click.option('--model', type=click.Path(exists=True), default=_default_model,
@@ -47,9 +47,9 @@ def train(config, model, load, save, args):
     # train config
     logging.info(f'Using default training configuration: {_default_config}')
     train_cfg = OmegaConf.load(_default_config)
-    if config is not None:
-        logging.info(f'Using additional configuration: {config}')
-        train_cfg = OmegaConf.merge(train_cfg, OmegaConf.load(config))
+    for cfg in config:
+        logging.info(f'Using additional configuration: {cfg}')
+        train_cfg = OmegaConf.merge(train_cfg, OmegaConf.load(cfg))
     if args:
         logging.info(f'Overriding configuration:')
         for arg in args:
