@@ -60,9 +60,9 @@ def exp_expand(d_ij: Tensor, shifts: Tensor, eta: float) -> Tensor:
     return torch.exp(-eta * (d_ij.unsqueeze(-2) - shifts.unsqueeze(-1)) ** 2)
 
 
-def nse(Q: Tensor, q_u: Tensor, f_u: Tensor, data: Dict[str, Tensor]) -> Tensor:
+def nse(Q: Tensor, q_u: Tensor, f_u: Tensor, data: Dict[str, Tensor], epsilon: float = 1.0e-6) -> Tensor:
     # Q and q_u and f_u must have last dimension size 1 or 2
-    F_u = nbops.mol_sum(f_u, data) + 1e-6
+    F_u = nbops.mol_sum(f_u, data) + epsilon
     Q_u = nbops.mol_sum(q_u, data)
     dQ = Q - Q_u
     # for loss
