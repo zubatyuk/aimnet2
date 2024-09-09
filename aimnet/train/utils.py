@@ -45,7 +45,7 @@ def load_dataset(cfg: omegaconf.DictConfig, kind='train'):
             'shard': shard,
         }
     cfg.datasets[kind].kwargs.update(extra_kwargs)
-    cfg.datasets[kind].args = [cfg.train]
+    cfg.datasets[kind].args = [cfg["kind"]]
     ds = build_module(OmegaConf.to_container(cfg.datasets[kind]))
     ds = apply_sae(ds, cfg)
     return ds
@@ -90,12 +90,13 @@ def get_loaders(cfg: omegaconf.DictConfig):
     if cfg.val is not None:
         ds_val = load_dataset(cfg, kind='val')
         logging.info(f'Loaded validation dataset from {cfg.val} with {len(ds_val)} samples.')
-    if cfg.separate_val:
-        ds_train, ds_val = ds_train.random_split(1-cfg.val_fraction, cfg.val_fraction)
-        logging.info(f'Randomly train dataset into train and val datasets, sizes {len(ds_train)} and {len(ds_val)} {cfg.val_fraction*100:.1f}%.')
     else:
-        ds_val = ds_train.random_split(cfg.val_fraction)[0]
-        logging.info(f'Using a random fraction ({cfg.val_fraction*100:.1f}%, {len(ds_val)} samples) of train dataset for validation.')
+        if cfg.separate_val:
+            ds_train, ds_val = ds_train.random_split(1-cfg.val_fraction, cfg.val_fraction)
+            logging.info(f'Randomly train dataset into train and val datasets, sizes {len(ds_train)} and {len(ds_val)} {cfg.val_fraction*100:.1f}%.')
+        else:
+            ds_val = ds_train.random_split(cfg.val_fraction)[0]
+            logging.info(f'Using a random fraction ({cfg.val_fraction*100:.1f}%, {len(ds_val)} samples) of train dataset for validation.')
     
     # merge small groups
     ds_train.merge_groups(min_size=8*cfg.samplers.train.kwargs.batch_size, 
