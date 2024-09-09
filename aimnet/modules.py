@@ -306,7 +306,7 @@ class LRCoulomb(nn.Module):
         q_i, q_j = nbops.get_ij(q, data)
         epot = ops.coulomb_potential_dsf(q_j, d_ij, self.dsf_rc, self.dsf_alpha, data)
         e = q_i * epot
-        e = nbops.mol_sum(e, data)
+        e = nbops.mol_sum(e, data, suffix='_lr')
         e = e - self.coul_simple_sr(data)
         return e
 
@@ -369,6 +369,7 @@ class LRCoulomb(nn.Module):
 
         energy_matrix = e_real_matrix + e_recip_matrix + e_self_matrix
         e = self._factor * (energy_matrix * charges[:, None] * charges[None, :]).sum()
+        e = e - self.coul_simple_sr(data)
         return e
 
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
@@ -435,7 +436,7 @@ class D3TS(nn.Module):
 
     def forward(self, data: Dict[str, Tensor]) -> Dict[str, Tensor]:
         disp_param = data[self.key_in]
-        disp_param_i, disp_param_j = nbops.get_ij(disp_param, data)
+        disp_param_i, disp_param_j = nbops.get_ij(disp_param, data, suffix='_lr')
         c6_i, alpha_i = disp_param_i.unbind(dim=-1)
         c6_j, alpha_j = disp_param_j.unbind(dim=-1)
 
@@ -443,9 +444,9 @@ class D3TS(nn.Module):
         c6ij = 2 * c6_i * c6_j / (c6_i * alpha_j / alpha_i + c6_j * alpha_i / alpha_j).clamp(min=1e-4)
 
         rr = self.r4r2[data['numbers']]
-        rr_i, rr_j = nbops.get_ij(rr, data)
+        rr_i, rr_j = nbops.get_ij(rr, data, suffix='_lr')
         rrij = 3 * rr_i * rr_j
-        rrij = nbops.mask_ij_(rrij, data, 1.0)
+        rrij = nbops.mask_ij_(rrij, data, 1.0, suffix='_lr')
         r0ij = self.a1 * rrij.sqrt() + self.a2
 
         ops.lazy_calc_dij_lr(data)

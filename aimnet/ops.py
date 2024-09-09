@@ -21,7 +21,7 @@ def calc_distances(data: Dict[str, Tensor], suffix: str = '', pad_value: float=1
     coord_i, coord_j = nbops.get_ij(data["coord"], data, suffix)
     if "shifts" in data:
         assert "cell" in data, "cell is required if shifts are provided"
-        shifts = data["shifts"] @ data["cell"]
+        shifts = data[f"shifts{suffix}"] @ data["cell"]
         coord_j = coord_j + shifts
     r_ij = coord_j - coord_i
     d_ij = torch.norm(r_ij, dim=-1)
@@ -90,7 +90,7 @@ def coulomb_potential_dsf(q_j: Tensor, d_ij: Tensor, Rc: float, alpha: float, da
     _c3 = _c2 / Rc
     _c4 = 2 * alpha * math.exp(- (alpha * Rc) ** 2) / (Rc * math.pi ** 0.5)
     epot = q_j * (_c1 - _c2 + (d_ij - Rc) * (_c3 + _c4))
-    epot = nbops.mask_ij_(epot, data, 0.0)
+    epot = nbops.mask_ij_(epot, data, mask_value=0.0, suffix='_lr')
     epot = nbops.mol_sum(epot, data)
     return epot
 
