@@ -45,7 +45,7 @@ def load_dataset(cfg: omegaconf.DictConfig, kind='train'):
             'shard': shard,
         }
     cfg.datasets[kind].kwargs.update(extra_kwargs)
-    cfg.datasets[kind].args = [cfg["kind"]]
+    cfg.datasets[kind].args = [cfg[kind]]
     ds = build_module(OmegaConf.to_container(cfg.datasets[kind]))
     ds = apply_sae(ds, cfg)
     return ds
