@@ -452,7 +452,7 @@ class D3TS(nn.Module):
         ops.lazy_calc_dij_lr(data)
         d_ij = data['d_ij_lr'] * constants.Bohr_inv
         e_ij = c6ij * (self.s6 / (d_ij.pow(6) + r0ij.pow(6)) + self.s8 * rrij / (d_ij.pow(8) + r0ij.pow(8)))
-        e = nbops.mol_sum(e_ij.sum(-1), data) * constants.half_Hartree
+        e = - constants.half_Hartree * nbops.mol_sum(e_ij.sum(-1), data)
 
         if self.key_out in data:
             data[self.key_out] = data[self.key_out] + e
