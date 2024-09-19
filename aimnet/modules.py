@@ -306,7 +306,7 @@ class LRCoulomb(nn.Module):
         q_i, q_j = nbops.get_ij(q, data)
         epot = ops.coulomb_potential_dsf(q_j, d_ij, self.dsf_rc, self.dsf_alpha, data)
         e = q_i * epot
-        e = nbops.mol_sum(e, data, suffix='_lr')
+        e = nbops.mol_sum(e, data)
         e = e - self.coul_simple_sr(data)
         return e
 
