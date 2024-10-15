@@ -373,10 +373,10 @@ class SizeGroupedDataset:
 
     def concatenate(self, key):
         try:
-            C = np.concatenate([g[key] for g in self.values()], axis=0)
+            C = np.concatenate([g[key] for g in self.values() if len(g)], axis=0)
         except:
             C = np.concatenate([g[key].flatten()
-                                for g in self.values()], axis=0)
+                                for g in self.values() if len(g)], axis=0)
         return C
 
     def apply_peratom_shift(self, key_in='energy', key_out='energy',
