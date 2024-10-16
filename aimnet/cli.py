@@ -17,4 +17,6 @@ cli.add_command(calc_sae, name='calc_sae')
 
 
 if __name__ == '__main__':
+    import logging
+    logging.basicConfig(level=logging.INFO)
     cli()

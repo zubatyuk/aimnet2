@@ -14,8 +14,8 @@ def calc_sae(ds, output, samples=100000):
     logging.info(f'Loading dataset from {ds}')
     ds = SizeGroupedDataset(ds, keys=['numbers', 'energy'])
     logging.info(f'Loaded dataset with {len(ds)} samples')
-    if samples > 0 and len(ds) < samples:
-        ds = ds.random_split(len(ds) / samples)[0]
+    if samples > 0 and len(ds) > samples:
+        ds = ds.random_split(samples / len(ds))[0]
     logging.info(f'Using {len(ds)} samples to calculate SAE')
     sae = ds.apply_peratom_shift('energy', '_energy')
     # remove up 2 percentiles from right and left
@@ -39,6 +39,7 @@ def calc_sae(ds, output, samples=100000):
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
     calc_sae()
 
 
