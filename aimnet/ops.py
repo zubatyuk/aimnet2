@@ -19,13 +19,17 @@ def lazy_calc_dij_lr(data: Dict[str, Tensor]) -> Dict[str, Tensor]:
 
 def calc_distances(data: Dict[str, Tensor], suffix: str = '', pad_value: float=1.0) -> Tuple[Tensor, Tensor]:
     coord_i, coord_j = nbops.get_ij(data["coord"], data, suffix)
-    if "shifts" in data:
+    if f"shifts{suffix}" in data:
         assert "cell" in data, "cell is required if shifts are provided"
-        shifts = data[f"shifts{suffix}"] @ data["cell"]
+        nb_mode = nbops.get_nb_mode(data)
+        if nb_mode == 2:
+            shifts = torch.einsum('bnmd,bdh->bnmh', data[f"shifts{suffix}"], data["cell"])
+        else:
+            shifts = data[f"shifts{suffix}"] @ data["cell"]
         coord_j = coord_j + shifts
     r_ij = coord_j - coord_i
     d_ij = torch.norm(r_ij, dim=-1)
-    d_ij = nbops.mask_ij(d_ij, data, pad_value, suffix)
+    d_ij = nbops.mask_ij_(d_ij, data, mask_value=pad_value, inplace=False, suffix=suffix)
     return d_ij, r_ij
 
 
@@ -62,7 +66,7 @@ def exp_expand(d_ij: Tensor, shifts: Tensor, eta: float) -> Tensor:
 
 def nse(Q: Tensor, q_u: Tensor, f_u: Tensor, data: Dict[str, Tensor], epsilon: float = 1.0e-6) -> Tensor:
     # Q and q_u and f_u must have last dimension size 1 or 2
-    F_u = nbops.mol_sum(f_u, data) + epsilon
+    F_u = nbops.mol_sum(f_u, data) + epsilon 
     Q_u = nbops.mol_sum(q_u, data)
     dQ = Q - Q_u
     # for loss
@@ -90,8 +94,18 @@ def coulomb_potential_dsf(q_j: Tensor, d_ij: Tensor, Rc: float, alpha: float, da
     _c3 = _c2 / Rc
     _c4 = 2 * alpha * math.exp(- (alpha * Rc) ** 2) / (Rc * math.pi ** 0.5)
     epot = q_j * (_c1 - _c2 + (d_ij - Rc) * (_c3 + _c4))
-    epot = nbops.mask_ij_(epot, data, mask_value=0.0, suffix='_lr')
-    epot = nbops.mol_sum(epot, data)
+    epot = nbops.mask_ij_(epot, data, mask_value=0.0, inplace=True, suffix='_lr')
+    epot = epot.sum(-1)
+    return epot
+
+
+def coulomb_potential_sf(q_j: Tensor, d_ij: Tensor, Rc: float, data: Dict[str, Tensor]) -> Tensor:
+    _c1 = 1.0 / d_ij
+    _c2 = 1.0 / Rc
+    _c3 = _c2 / Rc
+    epot = q_j * (_c1 - _c2 + (d_ij - Rc) * _c3) 
+    epot = nbops.mask_ij_(epot, data, mask_value=0.0, inplace=True, suffix='_lr')
+    epot = epot.sum(-1)
     return epot
 
 

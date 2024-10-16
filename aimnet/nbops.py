@@ -73,37 +73,40 @@ def calc_masks(data: Dict[str, Tensor]) -> Dict[str, Tensor]:
     return data
 
 
-def mask_i_(x: Tensor, data: Dict[str, Tensor], mask_value: float) -> Tensor:
+def mask_ij_(x: Tensor, data: Dict[str, Tensor], mask_value: float = 0.0, inplace: bool = True, suffix: str = "") -> Tensor:
+    mask = data[f"mask_ij{suffix}"]
+    for i in range(x.ndim - mask.ndim):
+        mask = mask.unsqueeze(-1)
+    if inplace:
+        x.masked_fill_(mask, mask_value)
+    else:
+        x = x.masked_fill(mask, mask_value)
+    return x
+
+def mask_i_(x: Tensor, data: Dict[str, Tensor], mask_value: float = 0.0, inplace: bool = True) -> Tensor:
     nb_mode = get_nb_mode(data)
     if nb_mode == 0:
         if data["_input_padded"].item():
             mask = data["mask_i"]
             for i in range(x.ndim - mask.ndim):
                 mask = mask.unsqueeze(-1)
-            x.masked_fill_(mask, mask_value)
+            if inplace:
+                x.masked_fill_(mask, mask_value)
+            else:
+                x = x.masked_fill(mask, mask_value)
     elif nb_mode == 1:
-        x[-1] = mask_value
+        if inplace:
+            x[-1] = mask_value
+        else:
+            x = torch.cat([x[:-1], torch.zeros_like(x[:1])], dim=0)
     elif nb_mode == 2:
-        x[:, -1] = mask_value
+        if inplace:
+            x[:, -1] = mask_value
+        else:
+            x = torch.cat([x[:, :-1], torch.zeros_like(x[:, :1])], dim=1)
     else:
         raise ValueError(f"Invalid neighbor mode: {nb_mode}")
     return x
-
-
-def mask_ij_(x: Tensor, data: Dict[str, Tensor], mask_value: float, suffix: str = "") -> Tensor:
-    mask = data[f"mask_ij{suffix}"]
-    for i in range(x.ndim - mask.ndim):
-        mask = mask.unsqueeze(-1)
-    x.masked_fill_(mask, mask_value)
-    return x
-
-
-def mask_ij(x: Tensor, data: Dict[str, Tensor], mask_value: float, suffix: str = "") -> Tensor:
-    mask = data[f"mask_ij{suffix}"]
-    for i in range(x.ndim - mask.ndim):
-        mask = mask.unsqueeze(-1)
-    x = x.masked_fill(mask, mask_value)
-    return x    
 
 
 def get_ij(x: Tensor, data: Dict[str, Tensor], suffix: str = "") -> Tuple[Tensor, Tensor]:
